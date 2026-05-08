@@ -905,7 +905,7 @@ async def send_message_to_history_api(group_id: str, writer_name: str, message: 
         try:
             async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                 async with session.post(
-                        "https://api.abstract-it.uz/api/tickets/history",
+                        f"{BASE_URL}/tickets/history",
                         json=payload,
                         headers=headers,
                         timeout=10
@@ -955,7 +955,7 @@ async def retry_failed_messages():
                 }
                 async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                     async with session.post(
-                            "https://api.abstract-it.uz/api/tickets/history",
+                            f"{BASE_URL}/tickets/history",
                             json=payload,
                             headers=headers,
                             timeout=10
@@ -1547,7 +1547,7 @@ DEPARTMENT_MAP = {"fleet": 0, "updater": 1, "dispatcher": 2, "insurance": 3, "sa
 PRIORITY_MAP = {"high": 0, "medium": 1, "low": 2}
 STATUS_TODO = 0
 
-BASE_URL = os.environ.get("BASE_URL", "https://api.abstract-it.uz/api")
+BASE_URL = os.environ.get("BASE_URL", "https://api.dev.abstract-it.uz/api")
 LOGIN_URL = f"{BASE_URL}/auth/login"
 SWAGGER_URL = f"{BASE_URL}/tickets"
 VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token"
@@ -3984,8 +3984,9 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
     print(f"🔵 run_bol_check: sending POST to /check-bol...")
     try:
         async with httpx.AsyncClient() as client_http:
+            bot_port = int(os.environ.get("BOT_PORT", "8045"))
             response = await client_http.post(
-                "http://localhost:8045/check-bol",
+                f"http://localhost:{bot_port}/check-bol",
                 data=data, files=files, timeout=180
             )
             print(f"🔵 run_bol_check: POST returned status={response.status_code}")
@@ -4332,11 +4333,12 @@ async def run_bot():
 # === Main entry point ===
 # ======================================================
 async def main():
+    bot_port = int(os.environ.get("BOT_PORT", "8045"))
     print("🚀 Starting combined Telegram bot and FastAPI server...")
     print("📊 Available endpoints:")
     print("   - Telegram bot: Listening for messages")
-    print("   - BOT API: http://localhost:8045/docs")
-    print("   - BOL Check: POST http://localhost:8045/check-bol")
+    print(f"   - BOT API: http://localhost:{bot_port}/docs")
+    print(f"   - BOL Check: POST http://localhost:{bot_port}/check-bol")
 
     await init_db()
 
@@ -4383,7 +4385,7 @@ async def main():
     config = uvicorn.Config(
         app=app,
         host="0.0.0.0",
-        port=int(os.environ.get("BOT_PORT", "8045")),
+        port=bot_port,
         log_level="info"
     )
     server = uvicorn.Server(config)
