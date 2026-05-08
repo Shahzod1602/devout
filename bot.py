@@ -2450,7 +2450,7 @@ def get_pdf_page_count(file_bytes: bytes, file_name: str) -> int:
         return 1
 
 
-async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_name: str, file_type: int = 1, group_id: int = None) -> dict:
+async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_name: str, file_type: int = 1, group_id: int = None, message_id: str = None) -> dict:
     """Natijani POST /api/paperwork-issues ga multipart form sifatida yuborish. file_type: 1=BOL, 2=POD"""
     global ACCESS_TOKEN
     token = await get_api_token()
@@ -2477,7 +2477,10 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
 
         data = {
             "LoadId": result_data["loadId"],
-            "FileType": file_type,  # 1=Bol, 2=Pod
+            "FileType": file_type,
+        }
+        if message_id is not None:
+            data["MessageId"] = str(message_id)
             "Weight.IsHealthy": str(result_data["weight"]["isHealthy"]).lower(),
             "Weight.Summary": result_data["weight"]["summary"],
             "Signature.IsHealthy": str(result_data["signature"]["isHealthy"]).lower(),
@@ -4056,7 +4059,7 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                 paperwork = check_result['paperwork_result']
                 print(f"📋 paperwork loadId={paperwork.get('loadId')}, calling post_paperwork_issue...")
                 bol_post_result = await post_paperwork_issue(
-                    paperwork, file_bytes_value, file_name or "bol_document", file_type=1, group_id=chat_id
+                    paperwork, file_bytes_value, file_name or "bol_document", file_type=1, group_id=chat_id, message_id=str(msg.message_id)
                 )
                 if bol_post_result["success"]:
                     print(f"✅ BOL paperwork issue yuborildi! Load #{new_load_id}")
@@ -4091,7 +4094,7 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                     "deliveryAddressAddress": {"isHealthy": address_match, "summary": address_notes}
                 }
                 pod_post_result = await post_paperwork_issue(
-                    pod_paperwork_data, file_bytes_value, file_name or "pod_document", file_type=2, group_id=chat_id
+                    pod_paperwork_data, file_bytes_value, file_name or "pod_document", file_type=2, group_id=chat_id, message_id=str(msg.message_id)
                 )
                 if pod_post_result["success"]:
                     print(f"✅ POD paperwork issue yuborildi! Load #{load_display_id}")
