@@ -2478,9 +2478,6 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
         data = {
             "LoadId": result_data["loadId"],
             "FileType": file_type,
-        }
-        if message_id is not None:
-            data["MessageId"] = str(message_id)
             "Weight.IsHealthy": str(result_data["weight"]["isHealthy"]).lower(),
             "Weight.Summary": result_data["weight"]["summary"],
             "Signature.IsHealthy": str(result_data["signature"]["isHealthy"]).lower(),
@@ -2500,6 +2497,8 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
             "SealNumber.IsHealthy": "true",
             "SealNumber.Summary": result_data.get("sealNumber", {}).get("summary", "N/A"),
         }
+        if message_id is not None:
+            data["MessageId"] = str(message_id)
 
         # DEBUG: Yuborilayotgan ma'lumotni log qilish
         print(f"📋 Paperwork API ga yuborilayotgan data:")
