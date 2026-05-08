@@ -1571,8 +1571,8 @@ TIMEZONE_UTC_OFFSET = {"est": -5, "edt": -4, "cst": -6, "cdt": -5, "mst": -7, "m
 
 import base64
 LOGIN_CREDENTIALS = {
-    "email": os.environ.get("LOGIN_EMAIL", "clarvio@abstract-it.uz"),
-    "password": os.environ.get("LOGIN_PASSWORD", "0987654321")
+    "email": os.environ.get("LOGIN_EMAIL", ""),
+    "password": os.environ.get("LOGIN_PASSWORD", "")
 }
 ACCESS_TOKEN = None
 TOKEN_EXPIRES_AT = 0  # Unix timestamp
