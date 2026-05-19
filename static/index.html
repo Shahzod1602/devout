@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>bot · Paperwork Analyze Stats</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;800;900&family=JetBrains+Mono:wght@300;400;500;700&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0c10;
+      --surface: #11141a;
+      --surface-2: #161a22;
+      --border: #1f2530;
+      --border-bright: #2a313d;
+      --text: #e8e6dc;
+      --text-dim: #7a8597;
+      --text-muted: #4a5260;
+      --accent: #ff6b1a;
+      --accent-glow: rgba(255, 107, 26, 0.18);
+      --good: #10d690;
+      --warn: #ffd166;
+      --error: #ef4444;
+      --neutral: #6ea8fe;
+    }
+    * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    html, body { background: var(--bg); }
+    body {
+      font-family: 'Archivo', system-ui, sans-serif;
+      color: var(--text);
+      min-height: 100vh;
+      letter-spacing: -0.01em;
+    }
+    .font-display { font-family: 'Big Shoulders Display', sans-serif; letter-spacing: -0.02em; }
+    .font-mono    { font-family: 'JetBrains Mono', monospace; letter-spacing: 0; }
+    .bg-grid {
+      background-image:
+        linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+      background-size: 48px 48px;
+      background-position: -1px -1px;
+    }
+    @keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.35;transform:scale(.85)} }
+    .pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 18px 20px;
+      position: relative;
+    }
+    .kpi-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.22em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+    .kpi-value {
+      font-family: 'Big Shoulders Display', sans-serif;
+      font-weight: 800;
+      font-size: 44px;
+      line-height: 1;
+      margin-top: 8px;
+      letter-spacing: -0.01em;
+    }
+    .kpi-sub {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      padding: 6px 12px;
+      font-size: 10px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-ghost:hover { border-color: var(--text-dim); color: var(--text); }
+    .btn-ghost.is-active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(255,107,26,0.06);
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+    .panel-header {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .recent-row {
+      display: grid;
+      grid-template-columns: 110px 110px 1fr 110px 90px;
+      gap: 12px;
+      padding: 9px 18px;
+      border-bottom: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+      align-items: center;
+    }
+    .recent-row.head {
+      color: var(--text-muted);
+      font-size: 9.5px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      background: var(--surface-2);
+    }
+    .recent-row:last-child { border-bottom: 0; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      border: 1px solid transparent;
+    }
+    .badge-matched  { color: var(--good);    border-color: rgba(16,214,144,0.35); }
+    .badge-no_match { color: var(--warn);    border-color: rgba(255,209,102,0.35); }
+    .badge-not_bol  { color: var(--neutral); border-color: rgba(110,168,254,0.35); }
+    .badge-error    { color: var(--error);   border-color: rgba(239,68,68,0.35); }
+    .badge-no_loads { color: var(--text-dim); border-color: var(--border-bright); }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border-bright); }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+    .bar-stack {
+      display: flex;
+      height: 10px;
+      width: 100%;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .bar-seg { height: 100%; }
+    .bar-matched  { background: var(--good); }
+    .bar-no_match { background: var(--warn); }
+    .bar-not_bol  { background: var(--neutral); }
+    .bar-error    { background: var(--error); }
+    .bar-no_loads { background: var(--text-muted); }
+  </style>
+</head>
+<body class="bg-grid">
+
+  <header class="border-b border-[#1f2530] sticky top-0 bg-[var(--bg)]/90 backdrop-blur-sm z-10">
+    <div class="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+          <rect x="1.5" y="1.5" width="29" height="29" stroke="#ff6b1a" stroke-width="1.5"/>
+          <circle cx="16" cy="16" r="3" fill="#ff6b1a"/>
+          <path d="M16 6v4M16 22v4M6 16h4M22 16h4" stroke="#ff6b1a" stroke-width="1.5"/>
+        </svg>
+        <div>
+          <div class="font-mono text-[9px] tracking-[0.3em] text-[var(--text-muted)] leading-none">ABSTRACT // BOT</div>
+          <div class="font-display font-extrabold text-[16px] leading-none mt-1">PAPERWORK·ANALYZE</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="lastUpdated" class="font-mono text-[11px] text-[var(--text-dim)]">—</span>
+        <button id="btnRefresh" class="btn-ghost">REFRESH</button>
+        <span class="flex items-center gap-2 font-mono text-[10px] tracking-[0.2em] text-[var(--text-dim)]">
+          <span class="w-1.5 h-1.5 rounded-full bg-[var(--good)] pulse-dot"></span>LIVE
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-[1400px] mx-auto px-6 py-8 space-y-8">
+
+    <!-- Range selector -->
+    <div class="flex items-center gap-2">
+      <span class="font-mono text-[10px] tracking-[0.2em] text-[var(--text-muted)] mr-2">RANGE</span>
+      <button class="btn-ghost range-btn" data-range="1h">1H</button>
+      <button class="btn-ghost range-btn is-active" data-range="24h">24H</button>
+      <button class="btn-ghost range-btn" data-range="7d">7D</button>
+      <button class="btn-ghost range-btn" data-range="30d">30D</button>
+      <button class="btn-ghost range-btn" data-range="all">ALL</button>
+    </div>
+
+    <!-- KPI cards -->
+    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="kpi">
+        <div class="kpi-label">Total Triggered</div>
+        <div class="kpi-value" id="kpiTotal">—</div>
+        <div class="kpi-sub" id="kpiTotalSub">—</div>
+      </div>
+      <div class="kpi" style="border-color: rgba(16,214,144,0.35);">
+        <div class="kpi-label" style="color: var(--good);">Matched (Success)</div>
+        <div class="kpi-value" id="kpiMatched" style="color: var(--good);">—</div>
+        <div class="kpi-sub" id="kpiSuccessRate">—</div>
+      </div>
+      <div class="kpi" style="border-color: rgba(239,68,68,0.30);">
+        <div class="kpi-label" style="color: var(--error);">Failed</div>
+        <div class="kpi-value" id="kpiFailed" style="color: var(--error);">—</div>
+        <div class="kpi-sub" id="kpiFailedSub">—</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Avg Latency</div>
+        <div class="kpi-value" id="kpiLatency">—</div>
+        <div class="kpi-sub" id="kpiGroups">—</div>
+      </div>
+    </section>
+
+    <!-- Breakdown -->
+    <section class="panel">
+      <div class="panel-header">
+        <span>Result Breakdown</span>
+        <span id="breakdownTotal" class="text-[var(--text-dim)]">—</span>
+      </div>
+      <div class="px-5 py-5 space-y-4">
+        <div class="bar-stack" id="barStack"></div>
+        <div id="breakdownLegend" class="grid grid-cols-2 md:grid-cols-5 gap-3 text-[12px] font-mono"></div>
+      </div>
+    </section>
+
+    <!-- Recent events -->
+    <section class="panel">
+      <div class="panel-header">
+        <span>Recent Events</span>
+        <span class="text-[var(--text-dim)]">last 50</span>
+      </div>
+      <div class="recent-row head">
+        <div>WHEN</div>
+        <div>RESULT</div>
+        <div>GROUP / ERROR</div>
+        <div>LOAD ID</div>
+        <div class="text-right">LATENCY</div>
+      </div>
+      <div id="recentList"></div>
+    </section>
+
+  </main>
+
+  <footer class="border-t border-[#1f2530] mt-12">
+    <div class="max-w-[1400px] mx-auto px-6 py-4 font-mono text-[10px] tracking-[0.2em] text-[var(--text-muted)] flex justify-between">
+      <span>BOT/STATS · LOCAL SQLITE</span>
+      <span id="footerEndpoint">/stats/paperwork/*</span>
+    </div>
+  </footer>
+
+  <script>
+    let currentRange = '24h';
+
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n) => Number(n || 0).toLocaleString();
+    const fmtMs = (n) => {
+      n = Number(n || 0);
+      if (n < 1000) return n + 'ms';
+      return (n / 1000).toFixed(1) + 's';
+    };
+    const tsFmt = (ts) => {
+      const d = new Date(ts * 1000);
+      const now = new Date();
+      const sameDay = d.toDateString() === now.toDateString();
+      if (sameDay) {
+        return d.toTimeString().slice(0, 8);
+      }
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${m}-${day} ${d.toTimeString().slice(0, 5)}`;
+    };
+
+    const RESULTS = [
+      { key: 'matched',  label: 'Matched',  color: 'var(--good)' },
+      { key: 'no_match', label: 'No match', color: 'var(--warn)' },
+      { key: 'not_bol',  label: 'Not BOL',  color: 'var(--neutral)' },
+      { key: 'error',    label: 'Error',    color: 'var(--error)' },
+      { key: 'no_loads', label: 'No loads', color: 'var(--text-muted)' },
+    ];
+
+    async function loadSummary() {
+      const r = await fetch(`/stats/paperwork/summary?range=${currentRange}`);
+      const d = await r.json();
+      const total = d.total || 0;
+      $('kpiTotal').textContent = fmt(total);
+      $('kpiTotalSub').textContent = `${d.unique_groups || 0} unique groups`;
+      $('kpiMatched').textContent = fmt(d.matched);
+      $('kpiSuccessRate').textContent = `${d.success_rate || 0}% success rate`;
+      $('kpiFailed').textContent = fmt(d.failed);
+      $('kpiFailedSub').textContent = `no_match ${d.no_match} · error ${d.error}`;
+      $('kpiLatency').textContent = fmtMs(d.avg_latency_ms);
+      $('kpiGroups').textContent = `avg per request`;
+      $('breakdownTotal').textContent = `${fmt(total)} events`;
+
+      // bar stack
+      const stack = $('barStack');
+      stack.innerHTML = '';
+      RESULTS.forEach(r => {
+        const cnt = d[r.key] || 0;
+        const pct = total ? (cnt / total) * 100 : 0;
+        if (pct === 0) return;
+        const seg = document.createElement('div');
+        seg.className = `bar-seg bar-${r.key}`;
+        seg.style.width = pct + '%';
+        seg.title = `${r.label}: ${cnt} (${pct.toFixed(1)}%)`;
+        stack.appendChild(seg);
+      });
+      if (!total) {
+        const empty = document.createElement('div');
+        empty.style.width = '100%';
+        empty.style.background = 'var(--surface-2)';
+        empty.className = 'bar-seg';
+        stack.appendChild(empty);
+      }
+
+      const legend = $('breakdownLegend');
+      legend.innerHTML = '';
+      RESULTS.forEach(r => {
+        const cnt = d[r.key] || 0;
+        const pct = total ? ((cnt / total) * 100).toFixed(1) : '0.0';
+        const cell = document.createElement('div');
+        cell.className = 'flex items-center gap-2';
+        cell.innerHTML = `
+          <span class="w-2 h-2 inline-block" style="background:${r.color}"></span>
+          <span class="text-[var(--text-dim)] uppercase tracking-wider text-[10px]">${r.label}</span>
+          <span class="ml-auto">${fmt(cnt)} <span class="text-[var(--text-muted)]">(${pct}%)</span></span>
+        `;
+        legend.appendChild(cell);
+      });
+    }
+
+    async function loadRecent() {
+      const r = await fetch('/stats/paperwork/recent?limit=50');
+      const d = await r.json();
+      const list = $('recentList');
+      list.innerHTML = '';
+      if (!d.items || d.items.length === 0) {
+        list.innerHTML = `<div class="recent-row" style="color:var(--text-muted)"><div>—</div><div>—</div><div>no events recorded yet</div><div>—</div><div class="text-right">—</div></div>`;
+        return;
+      }
+      d.items.forEach(it => {
+        const row = document.createElement('div');
+        row.className = 'recent-row';
+        const groupOrError = it.error ? `<span style="color:var(--error)">${escapeHtml(it.error)}</span>` : escapeHtml(it.group_id || '—');
+        row.innerHTML = `
+          <div style="color:var(--text-dim)">${tsFmt(it.ts)}</div>
+          <div><span class="badge badge-${it.result}">${it.result}</span></div>
+          <div>${groupOrError}</div>
+          <div style="color:var(--text-dim)">${escapeHtml(it.load_id || '—')}</div>
+          <div class="text-right" style="color:var(--text-dim)">${fmtMs(it.latency_ms)}</div>
+        `;
+        list.appendChild(row);
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    async function loadAll() {
+      try {
+        await Promise.all([loadSummary(), loadRecent()]);
+        const now = new Date();
+        $('lastUpdated').textContent = 'UPDATED ' + now.toTimeString().slice(0, 8);
+      } catch (e) {
+        $('lastUpdated').textContent = 'ERROR: ' + e.message;
+      }
+    }
+
+    document.querySelectorAll('.range-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('is-active'));
+        btn.classList.add('is-active');
+        currentRange = btn.dataset.range;
+        loadAll();
+      });
+    });
+    $('btnRefresh').addEventListener('click', loadAll);
+
+    loadAll();
+    setInterval(loadAll, 15000);
+  </script>
+</body>
+</html>

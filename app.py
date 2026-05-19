@@ -1,0 +1,57 @@
+"""FastAPI ilovasi: lifespan, static UI mount, router'larni include qilish.
+
+`main.py` shu app'ni uvicorn orqali ishga tushiradi.
+"""
+import asyncio
+import logging
+import os
+from contextlib import asynccontextmanager
+
+from api import api_router
+from db import init_db
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from paperwork import paperwork_api_router
+from stats import gemini_router, paperwork_router
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🚀 FastAPI starting up...")
+    await init_db()
+    from main import run_bot  # late import — main.py o'z navbatida app'ni import qiladi
+    bot_task = asyncio.create_task(run_bot())
+    logger.info("🤖 Telegram bot started in background")
+    yield
+    logger.info("🛑 FastAPI shutting down...")
+    bot_task.cancel()
+    try:
+        await bot_task
+    except asyncio.CancelledError:
+        logger.info("🤖 Telegram bot stopped")
+
+
+app = FastAPI(
+    title="Telegram Group Message API",
+    description="Bu API orqali **groupId** yuborib Telegram guruhiga xabar jo'natish mumkin.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Static UI mount (paperwork stats dashboard)
+_static_candidates = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"),
+    os.path.join(os.getcwd(), "static"),
+]
+for _sd in _static_candidates:
+    if os.path.isdir(_sd):
+        app.mount("/ui", StaticFiles(directory=_sd, html=True), name="ui")
+        break
+
+# Router'larni include qilish
+app.include_router(paperwork_router)         # /stats/paperwork/*
+app.include_router(gemini_router)            # /stats/gemini/*
+app.include_router(paperwork_api_router)     # /check-bol
+app.include_router(api_router)               # /send-message, /permissions/*, /accepted, ...
