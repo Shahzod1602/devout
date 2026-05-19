@@ -18,6 +18,7 @@ import aiohttp
 from aiogram import types
 from api.models import TicketStatusRequest, TicketStatusResponse
 from config import (
+    BASE_URL,
     DEPARTMENT_MAP,
     GROUP_TICKET_NOTIFICATIONS,
     PRIORITY_MAP,
@@ -42,8 +43,11 @@ from state import (
 
 logger = logging.getLogger(__name__)
 
-# Legacy hard-coded history endpoint
-_HISTORY_API_URL = "https://api.abstract-it.uz/api/tickets/history"
+# History endpoint — env-driven via BASE_URL (test: api.abstract-it.uz,
+# prod: api.prod.abstract-it.uz, dev: api.dev.abstract-it.uz). Previously
+# hardcoded to test, which made prod bot POST to the wrong backend and
+# get 404 for every prod group.
+_HISTORY_API_URL = f"{BASE_URL}/tickets/history"
 
 
 # ====== Status check ======
@@ -104,13 +108,15 @@ async def forward_message_to_history_if_todo(msg: types.Message, fallback_text: 
     writer_name = msg.from_user.full_name if msg.from_user else "unknown"
     logger.info("📤 [HISTORY] Sending to history API | group=%s | user=%s | text=%r",
                 msg.chat.id, writer_name, history_text[:60])
-    success = await send_message_to_history_api(
+    # Failure paths already self-report inside send_message_to_history_api:
+    #   404 → logger.warning + drop (group not in backend history, expected)
+    #   3 retries exhausted → send_error_to_group + FAILED_MESSAGES_QUEUE
+    # No need to alert again here.
+    await send_message_to_history_api(
         group_id=str(msg.chat.id),
         writer_name=writer_name,
         message=history_text,
     )
-    if not success:
-        await send_error_to_group(f"❌ [HISTORY] Failed to send message {message_key} to history API")
 
     HISTORY_SENT_MESSAGE_KEYS.add(message_key)
     if len(HISTORY_SENT_MESSAGE_KEYS) > 10000:
