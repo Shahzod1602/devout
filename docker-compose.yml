@@ -8,7 +8,7 @@ services:
     container_name: devout-bot
     restart: unless-stopped
     ports:
-      - "8047:8045"        # host 8047 → container 8045
+      - "6000:8045"        # host 6000 → container 8045
     env_file:
       - .env
     volumes:
