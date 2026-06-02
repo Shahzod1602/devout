@@ -497,9 +497,11 @@ async def generic_text_handler(msg: types.Message):
     if chat_id not in STARTED_GROUPS and not AWAITING_TOKEN.get(chat_id):
         return
 
-    # Internal team groups: no drivers. Text handler'da faqat [TODO]-tagged
-    # xabarlar `forward_message_to_history_if_todo` orqali backend'ga uzatiladi;
-    # qolgan xabarlar (check-in, basket, classify+history, ticket) — hammasi skip.
+    # Internal team groups: no drivers. Text handler'da [TODO]-tagged xabarlar
+    # `forward_message_to_history_if_todo` orqali backend'ga uzatiladi; backend
+    # deletion sync uchun `wait_for_server_and_check` ham chaqiriladi (standard
+    # xulq bilan teng). Qolgan oqim (check-in, basket, classify+history, ticket)
+    # — hammasi skip.
     _internal = is_internal_group(chat_id)
 
     if text == "🔄 Refresh":
@@ -586,14 +588,17 @@ async def generic_text_handler(msg: types.Message):
     if await forward_message_to_history_if_todo(msg, fallback_text=text):
         return
 
-    # Internal team: classify / history-API / basket / ticket pipeline kerak emas.
-    # Faqat [TODO]-tagged xabarlar yuqorida forward bo'ldi; qolgan xabarlar shunchaki ignore.
-    if _internal:
-        return
-
+    # Backend deletion sync: standard guruh xulqi bilan teng — RAM cache hit bo'lsa
+    # bepul; miss bo'lsa by-group API → 404 bo'lsa REGISTERED_GROUPS tozalanadi va
+    # "Group not found" xabari avtomatik yuboriladi (groups.py:301).
     registered = await wait_for_server_and_check(chat_id, chat_name, msg, force_check=False)
     if not registered:
         REGISTERED_GROUPS.pop(str(chat_id), None)
+        return
+
+    # Internal team: classify / history-API / basket / ticket pipeline kerak emas.
+    # Faqat [TODO]-tagged xabarlar yuqorida forward bo'ldi.
+    if _internal:
         return
 
     await send_action_log(chat_id, f"Message from {msg.from_user.full_name}: {text[:50]}...")
