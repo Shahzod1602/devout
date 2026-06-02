@@ -273,7 +273,10 @@ async def check_group_registered(group_id, group_name):
                         if company_id:
                             save_group_company_id(group_id, company_id)
                         driver_id_backend = resp_data.get("driverId")
-                        driver_name_backend = resp_data.get("driverName", "").strip()
+                        # `.get("driverName", "")` agar key bor lekin value=null bo'lsa,
+                        # default "" ishlamaydi va None qaytadi → None.strip() crash.
+                        # Backend driver olib tashlanganda aynan shu holat sodir bo'ladi.
+                        driver_name_backend = (resp_data.get("driverName") or "").strip()
                         if driver_id_backend is None:
                             local_driver = GROUP_DRIVER_IDS.pop(group_id_str, None)
                             if local_driver:
