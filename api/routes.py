@@ -49,8 +49,11 @@ from .models import (
     AcceptedResponse,
     GroupCompanyChangedRequest,
     GroupCompanyChangedResponse,
+    InlineButton,
     MessageRequest,
     MessageResponse,
+    PaperworkIssueNotifyRequest,
+    PaperworkIssueNotifyResponse,
     PermissionsRequest,
     PermissionsResponse,
     PermissionsUpdateRequest,
@@ -73,6 +76,58 @@ async def send_message(data: MessageRequest):
         message="Xabar navbatga qo'yildi",
         pinned=False,
     )
+
+
+# ====== Paperwork issue notifications ======
+
+@router.post("/paperwork-issue/notify", response_model=PaperworkIssueNotifyResponse)
+async def paperwork_issue_notify(data: PaperworkIssueNotifyRequest):
+    """Backend webhook: paperwork-issue yaratildi — toggle'larga qarab guruh(lar)ga inline tugmali xabar yuborish.
+
+    Backend tayyor rendered message yuboradi. Bot company permissions'dan
+    `paperworkDriverGroup` / `paperworkInternalTeam` toggle'larini o'qib, shu
+    company'ning standard va/yoki internal guruhlariga (issueId tugmalar bilan)
+    xabar enqueue qiladi.
+    """
+    perms = await get_company_permissions(str(data.companyId))
+    if not perms:
+        logger.info("ℹ️ /paperwork-issue/notify: no permissions row for company %s — skip", data.companyId)
+        return PaperworkIssueNotifyResponse(success=True, deliveredCount=0, groupIds=[])
+
+    send_to_driver = perms.get("paperworkDriverGroup", False)
+    send_to_internal = perms.get("paperworkInternalTeam", False)
+    if not (send_to_driver or send_to_internal):
+        logger.info("ℹ️ /paperwork-issue/notify: both toggles off for company %s — skip", data.companyId)
+        return PaperworkIssueNotifyResponse(success=True, deliveredCount=0, groupIds=[])
+
+    # callback_data formati pw_accept_<issueId> / pw_resend_<issueId> — handlers.py'da parse qilinadi.
+    buttons = [[
+        InlineButton(text="✅ Accept", callback_data=f"pw_accept_{data.issueId}"),
+        InlineButton(text="🔄 Resend", callback_data=f"pw_resend_{data.issueId}"),
+    ]]
+
+    tokens = load_all_group_tokens()
+    delivered: list[str] = []
+    for group_id, info in tokens.items():
+        if str(info.get("companyId")) != str(data.companyId):
+            continue
+        gtype = info.get("type", "standard")
+        if gtype == "standard" and not send_to_driver:
+            continue
+        if gtype == "internal" and not send_to_internal:
+            continue
+        await message_queue.put(MessageRequest(
+            group_id=group_id,
+            message=data.message,
+            inline_buttons=buttons,
+        ))
+        delivered.append(group_id)
+
+    logger.info(
+        "📨 /paperwork-issue/notify: company=%s issue=%s delivered to %d group(s): %s",
+        data.companyId, data.issueId, len(delivered), delivered,
+    )
+    return PaperworkIssueNotifyResponse(success=True, deliveredCount=len(delivered), groupIds=delivered)
 
 
 # ====== Ticket status ======
@@ -180,11 +235,13 @@ async def create_permissions(data: PermissionsRequest):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 """INSERT INTO company_permissions
-                   (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time, photo_pdf, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time,
+                    photo_pdf, paperwork_driver_group, paperwork_internal_team, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (str(data.companyId), int(data.ticketCreate), int(data.taskParaphrase),
                  int(data.bolPodPaperworkAnalysis), int(data.checkInCheckOut), int(data.sleepTime),
-                 int(data.photoPdf), now, now),
+                 int(data.photoPdf), int(data.paperworkDriverGroup), int(data.paperworkInternalTeam),
+                 now, now),
             )
             await db.commit()
     except aiosqlite.IntegrityError:
@@ -198,6 +255,8 @@ async def create_permissions(data: PermissionsRequest):
         checkInCheckOut=data.checkInCheckOut,
         sleepTime=data.sleepTime,
         photoPdf=data.photoPdf,
+        paperworkDriverGroup=data.paperworkDriverGroup,
+        paperworkInternalTeam=data.paperworkInternalTeam,
         createdAt=now,
         updatedAt=now,
     )
@@ -210,8 +269,9 @@ async def update_permissions(company_id: int, data: PermissionsUpdateRequest):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """INSERT INTO company_permissions
-               (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time, photo_pdf, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time,
+                photo_pdf, paperwork_driver_group, paperwork_internal_team, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(company_id) DO UPDATE SET
                  ticket_create=excluded.ticket_create,
                  task_paraphrase=excluded.task_paraphrase,
@@ -219,10 +279,13 @@ async def update_permissions(company_id: int, data: PermissionsUpdateRequest):
                  check_in_check_out=excluded.check_in_check_out,
                  sleep_time=excluded.sleep_time,
                  photo_pdf=excluded.photo_pdf,
+                 paperwork_driver_group=excluded.paperwork_driver_group,
+                 paperwork_internal_team=excluded.paperwork_internal_team,
                  updated_at=excluded.updated_at""",
             (str(company_id), int(data.ticketCreate), int(data.taskParaphrase),
              int(data.bolPodPaperworkAnalysis), int(data.checkInCheckOut), int(data.sleepTime),
-             int(data.photoPdf), now, now),
+             int(data.photoPdf), int(data.paperworkDriverGroup), int(data.paperworkInternalTeam),
+             now, now),
         )
         await db.commit()
     logger.info("✅ Permissions updated for company %s", company_id)

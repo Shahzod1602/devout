@@ -265,7 +265,8 @@ async def get_company_permissions(company_id: str) -> dict | None:
     """company_id bo'yicha permissions olish."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time, photo_pdf, created_at, updated_at "
+            "SELECT ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time, "
+            "photo_pdf, paperwork_driver_group, paperwork_internal_team, created_at, updated_at "
             "FROM company_permissions WHERE company_id=?",
             (str(company_id),),
         ) as cursor:
@@ -280,6 +281,8 @@ async def get_company_permissions(company_id: str) -> dict | None:
                 "checkInCheckOut": bool(row[3]),
                 "sleepTime": bool(row[4]),
                 "photoPdf": bool(row[5]),
-                "createdAt": row[6],
-                "updatedAt": row[7],
+                "paperworkDriverGroup": bool(row[6]),
+                "paperworkInternalTeam": bool(row[7]),
+                "createdAt": row[8],
+                "updatedAt": row[9],
             }

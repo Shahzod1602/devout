@@ -737,6 +737,94 @@ async def pending_docs_callback(callback: types.CallbackQuery):
     await callback.message.answer("📄 Document saved.")
 
 
+# ====== Paperwork issue Accept / Resend (driver group + internal team) ======
+#
+# Bu callback'lar `/api/paperwork-issue/notify` orqali yuborilgan xabardagi
+# Accept / Resend tugmalariga javob beradi. `callback_data` formati:
+#   pw_accept_<issueId> / pw_resend_<issueId>
+# Standard va internal team guruhlarda BIR XIL ishlaydi — silent-skip yo'q.
+
+@router.callback_query(F.data.startswith("pw_accept_"))
+async def paperwork_accept_callback(callback: types.CallbackQuery):
+    """Paperwork-issue Accept tugmasi: backend'ga `/paperwork-issues/{id}/accepted` POST."""
+    from config import PAPERWORK_ISSUES_URL, ssl_context
+
+    issue_id = callback.data.removeprefix("pw_accept_")
+    chat_id = callback.message.chat.id
+    user_name = callback.from_user.full_name or "user"
+    reason = (
+        "Accepted by updater in the internal team group."
+        if is_internal_group(chat_id)
+        else "Accepted by updater in the driver group."
+    )
+
+    token = await get_api_token()
+    if not token:
+        await callback.answer("❌ API auth failed", show_alert=True)
+        return
+
+    url = f"{PAPERWORK_ISSUES_URL}/{issue_id}/accepted"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept-Language": "EN",
+        "X-Group-Id": str(chat_id),
+    }
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            async with session.post(url, json={"reason": reason}, headers=headers,
+                                    timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status in (200, 201, 204):
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                    await callback.message.reply(f"✅ Accepted by {user_name}")
+                    await callback.answer()
+                    logger.info("✅ pw_accept %s by %s in group %s", issue_id, user_name, chat_id)
+                else:
+                    body = await resp.text()
+                    logger.warning("⚠️ pw_accept %s failed [%s]: %s", issue_id, resp.status, body[:200])
+                    await callback.answer(f"❌ Backend {resp.status}", show_alert=True)
+    except Exception as e:
+        logger.exception("❌ paperwork_accept_callback error")
+        await callback.answer(f"❌ {e}", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("pw_resend_"))
+async def paperwork_resend_callback(callback: types.CallbackQuery):
+    """Paperwork-issue Resend tugmasi: backend'ga `/paperwork-issues/{id}/resend-document` POST."""
+    from config import PAPERWORK_ISSUES_URL, ssl_context
+
+    issue_id = callback.data.removeprefix("pw_resend_")
+    chat_id = callback.message.chat.id
+    user_name = callback.from_user.full_name or "user"
+
+    token = await get_api_token()
+    if not token:
+        await callback.answer("❌ API auth failed", show_alert=True)
+        return
+
+    url = f"{PAPERWORK_ISSUES_URL}/{issue_id}/resend-document"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept-Language": "EN",
+        "X-Group-Id": str(chat_id),
+    }
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            async with session.post(url, json={}, headers=headers,
+                                    timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status in (200, 201, 204):
+                    await callback.message.edit_reply_markup(reply_markup=None)
+                    await callback.message.reply(f"🔄 Resend requested by {user_name}")
+                    await callback.answer()
+                    logger.info("🔄 pw_resend %s by %s in group %s", issue_id, user_name, chat_id)
+                else:
+                    body = await resp.text()
+                    logger.warning("⚠️ pw_resend %s failed [%s]: %s", issue_id, resp.status, body[:200])
+                    await callback.answer(f"❌ Backend {resp.status}", show_alert=True)
+    except Exception as e:
+        logger.exception("❌ paperwork_resend_callback error")
+        await callback.answer(f"❌ {e}", show_alert=True)
+
+
 # ====== Documents (BOL/POD) ======
 
 @router.message(F.document | F.photo)

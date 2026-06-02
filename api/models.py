@@ -2,10 +2,24 @@
 from pydantic import BaseModel
 
 
+class InlineButton(BaseModel):
+    """Telegram inline keyboard button.
+
+    Bittasi `callback_data` (in-bot callback uchun) yoki `url` (tashqi link uchun)
+    bilan to'ldiriladi. Hozir faqat `callback_data` ishlatiladi — `url` kelajak uchun.
+    """
+    text: str
+    callback_data: str | None = None
+    url: str | None = None
+
+
 class MessageRequest(BaseModel):
     group_id: str
     message: str
     has_pin_required: bool = False
+    # 2D list — har bir ichki list bir qator tugmalar (Telegram InlineKeyboard).
+    # None yoki bo'sh bo'lsa oddiy xabar (backward-compat).
+    inline_buttons: list[list[InlineButton]] | None = None
 
 
 class MessageResponse(BaseModel):
@@ -33,6 +47,8 @@ class PermissionsRequest(BaseModel):
     checkInCheckOut: bool = True
     sleepTime: bool = True
     photoPdf: bool = True
+    paperworkDriverGroup: bool = False
+    paperworkInternalTeam: bool = False
 
 
 class PermissionsUpdateRequest(BaseModel):
@@ -42,6 +58,8 @@ class PermissionsUpdateRequest(BaseModel):
     checkInCheckOut: bool = True
     sleepTime: bool = True
     photoPdf: bool = True
+    paperworkDriverGroup: bool = False
+    paperworkInternalTeam: bool = False
 
 
 class PermissionsResponse(BaseModel):
@@ -52,8 +70,28 @@ class PermissionsResponse(BaseModel):
     checkInCheckOut: bool
     sleepTime: bool
     photoPdf: bool
+    paperworkDriverGroup: bool
+    paperworkInternalTeam: bool
     createdAt: str
     updatedAt: str
+
+
+class PaperworkIssueNotifyRequest(BaseModel):
+    """Backend webhook payload: paperwork-issue yaratildi.
+
+    Backend message matnini tayyor render qilib yuboradi (template engine'i tomonida).
+    Bot company permissions va group cache asosida 0..2 ta guruhga yetkazadi va
+    Accept/Resend tugmalarini issueId bilan qo'shadi.
+    """
+    companyId: int
+    issueId: str
+    message: str
+
+
+class PaperworkIssueNotifyResponse(BaseModel):
+    success: bool
+    deliveredCount: int
+    groupIds: list[str]
 
 
 class AcceptedRequest(BaseModel):

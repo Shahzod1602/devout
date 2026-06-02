@@ -133,6 +133,23 @@ async def message_worker():
             data = await message_queue.get()
             message_text = _linkify_maps(data.message)
             send_payload = {"chat_id": data.group_id, "text": message_text, "parse_mode": "HTML"}
+            if data.inline_buttons:
+                # Pydantic InlineButton'larni Telegram Bot API ko'rinishiga aylantirish.
+                # `None` field'lar tashlanadi — Telegram bir button uchun faqat bitta
+                # action turini (callback_data yoki url) qabul qiladi.
+                send_payload["reply_markup"] = {
+                    "inline_keyboard": [
+                        [
+                            {
+                                k: v
+                                for k, v in {"text": b.text, "callback_data": b.callback_data, "url": b.url}.items()
+                                if v is not None
+                            }
+                            for b in row
+                        ]
+                        for row in data.inline_buttons
+                    ]
+                }
             try:
                 # NOTE: sync requests in async — FAZA 7'da httpx.AsyncClient ga ko'chiriladi.
                 send_response = requests.post(f"{TELEGRAM_API_BASE}/sendMessage", json=send_payload)  # noqa: ASYNC210

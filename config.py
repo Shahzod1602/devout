@@ -65,6 +65,7 @@ VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token"
 INTERNAL_VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token/internal"
 ACTION_LOGS_URL = f"{BASE_URL}/action-logs"
 CHECKIN_CHECKOUT_URL = f"{BASE_URL}/stops/checkin-checkout"
+PAPERWORK_ISSUES_URL = f"{BASE_URL}/paperwork-issues"
 
 # SLEEP_TIMER_PATH — test'da `/v1/drivers/sleep-timer/by-group`,
 # prod'da `/drivers/sleep-timer/by-group` (prod backend `/v1` segmentini
