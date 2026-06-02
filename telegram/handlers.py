@@ -8,7 +8,7 @@ import logging
 import aiohttp
 import aiosqlite
 from aiogram import F, Router, types
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from checkin import build_checkin_checkout_text, process_checkin_checkout_text
 from config import DB_PATH, DEFAULT_QUICK_BUTTONS
@@ -30,6 +30,7 @@ from groups import (
     save_started_groups,
     save_team_driver_id,
     validate_bot_token,
+    validate_bot_token_internal,
     wait_for_server_and_check,
 )
 from messaging import send_action_log, send_error_to_group
@@ -173,6 +174,61 @@ async def set_driver_callback(callback: types.CallbackQuery):
     await callback.message.answer("Quick buttons loaded:", reply_markup=keyboard)
 
 
+# ====== /internal_team — Internal team group registration ======
+
+@router.message(Command("internal_team"))
+async def internal_team_cmd(msg: types.Message, command: CommandObject):
+    """/internal_team <TOKEN> — guruhni Internal team sifatida (AgentBot uchun) ro'yxatdan o'tkazadi.
+
+    /start dan farqi: token bitta xabarda komanda bilan birga keladi —
+    AWAITING_TOKEN state'i ishlatilmaydi. Backend
+    `POST /general-settings/validate-bot-token/internal` ga so'rov yuboriladi.
+    """
+    await forward_message_to_history_if_todo(msg)
+
+    chat_id = msg.chat.id
+    chat_name = msg.chat.title or msg.from_user.full_name or "Private Chat"
+
+    token = (command.args or "").strip()
+    if not token:
+        await msg.answer(
+            "❌ Usage: <code>/internal_team &lt;TOKEN&gt;</code>\n"
+            "Example: <code>/internal_team MzozOjIyZmU0YzRlLWVkZWMtNGQxMC1iYjk3...</code>"
+        )
+        return
+
+    await msg.answer("🔐 Validating internal team token...")
+    access_token = await get_api_token()
+    if not access_token:
+        await msg.answer("❌ API connection failed. Please try again later.")
+        return
+
+    result = await validate_bot_token_internal(access_token, token, chat_id, chat_name)
+    if result.get("success"):
+        save_group_token(chat_id, token, chat_name)
+        AWAITING_TOKEN.pop(chat_id, None)
+        TOKEN_FAILED_ATTEMPTS.pop(chat_id, None)
+
+        try:
+            resp_data = result.get("data") or {}
+            company_id = resp_data.get("companyId") or resp_data.get("company_id")
+            if company_id:
+                save_group_company_id(chat_id, company_id)
+                logger.info("💾 companyId %s saved after internal token validation for group %s", company_id, chat_id)
+        except (AttributeError, TypeError):
+            logger.debug("Internal token validation result has no parseable company_id", exc_info=True)
+
+        await check_group_registered_force(chat_id, chat_name, force_check=True)
+        mark_group_started(chat_id)
+        await msg.answer("🎉 Group successfully registered as Internal Team!")
+        await send_action_log(chat_id, f"Internal team registration successful: {chat_name}")
+    else:
+        error_msg = result.get("message", "Unknown error")
+        if isinstance(error_msg, str) and "<" in error_msg and ">" in error_msg:
+            error_msg = "Server returned HTML response. Please check if the token is correct."
+        await msg.answer(f"❌ Internal token validation failed: {error_msg}")
+
+
 # ====== /help ======
 
 @router.message(Command("help"))
@@ -181,6 +237,7 @@ async def help_cmd(msg: types.Message):
     await msg.answer(
         "📋 <b>Available Commands</b>\n\n"
         "/start — Register the group and load quick buttons\n"
+        "/internal_team &lt;TOKEN&gt; — Register the group as an Internal Team (AgentBot)\n"
         "/setdriver — Set the primary driver for this group\n"
         "  • Reply to driver's message → /setdriver\n"
         "  • By ID → /setdriver 123456789\n"

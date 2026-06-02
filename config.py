@@ -62,6 +62,7 @@ BASE_URL = os.environ.get("BASE_URL", "https://api.abstract-it.uz/api").rstrip("
 LOGIN_URL = f"{BASE_URL}/auth/login"
 SWAGGER_URL = f"{BASE_URL}/tickets"
 VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token"
+INTERNAL_VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token/internal"
 ACTION_LOGS_URL = f"{BASE_URL}/action-logs"
 CHECKIN_CHECKOUT_URL = f"{BASE_URL}/stops/checkin-checkout"
 

@@ -17,7 +17,15 @@ from datetime import datetime
 
 import aiohttp
 import aiosqlite
-from config import BASE_URL, DB_PATH, STARTED_GROUPS_FILE, TOKEN_CACHE_FILE, VALIDATE_TOKEN_URL, ssl_context
+from config import (
+    BASE_URL,
+    DB_PATH,
+    INTERNAL_VALIDATE_TOKEN_URL,
+    STARTED_GROUPS_FILE,
+    TOKEN_CACHE_FILE,
+    VALIDATE_TOKEN_URL,
+    ssl_context,
+)
 from db import remove_team_driver_db, save_driver_id_db, save_team_driver_id_db
 from external import get_api_token, invalidate_token
 from messaging import send_error_to_group
@@ -329,8 +337,13 @@ async def wait_for_server_and_check(group_id, group_name, msg, force_check=False
         return False
 
 
-async def validate_bot_token(access_token, user_token, group_id, group_name):
-    """User-yuborgan tokenni backend orqali validatsiya qilish."""
+async def _post_validate_token(url, label, access_token, user_token, group_id, group_name):
+    """Shared validation POST — `url` ga payload yuborib, backend javobini bir xil shaklga keltiradi.
+
+    NOTE: prod backend `validate-bot-token` Content-Type header'ini yubormaydi
+    (test'da yuboriladi). aiohttp'ning `resp.json()` strict mimetype check'idan
+    o'tib bo'lmaydi — text'dan manually parse qilamiz.
+    """
     try:
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
             payload = {
@@ -345,14 +358,10 @@ async def validate_bot_token(access_token, user_token, group_id, group_name):
                 "X-Group-Id": str(group_id)
             }
 
-            logger.info("🔐 Validating token for group %s...", group_id)
-            async with session.post(VALIDATE_TOKEN_URL, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            logger.info("🔐 Validating %s token for group %s...", label, group_id)
+            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 response_text = await resp.text()
-                logger.info("📨 Validation response status: %s", resp.status)
-                # NOTE: prod backend `validate-bot-token` Content-Type header'ini
-                # yubormaydi (test'da yuboriladi). aiohttp'ning `resp.json()`
-                # strict mimetype check'idan o'tib bo'lmaydi — text'dan manually
-                # parse qilamiz.
+                logger.info("📨 %s validation response status: %s", label, resp.status)
                 try:
                     data = json.loads(response_text) if response_text else None
                 except (json.JSONDecodeError, ValueError, TypeError):
@@ -372,9 +381,27 @@ async def validate_bot_token(access_token, user_token, group_id, group_name):
                     "raw_response": response_text,
                 }
     except Exception as e:
-        logger.exception("❌ Validate Token Error")
+        logger.exception("❌ %s Validate Token Error", label)
         return {
             "success": False,
             "error": str(e),
             "message": f"Validation error: {str(e)}"
         }
+
+
+async def validate_bot_token(access_token, user_token, group_id, group_name):
+    """User-yuborgan tokenni backend orqali validatsiya qilish (oddiy guruh)."""
+    return await _post_validate_token(
+        VALIDATE_TOKEN_URL, "standard", access_token, user_token, group_id, group_name
+    )
+
+
+async def validate_bot_token_internal(access_token, user_token, group_id, group_name):
+    """Internal team guruhini ro'yxatdan o'tkazish.
+
+    POST /general-settings/validate-bot-token/internal — body bir xil
+    (token/groupId/groupName); backend guruhni `Internal` deb belgilaydi (AgentBot uchun).
+    """
+    return await _post_validate_token(
+        INTERNAL_VALIDATE_TOKEN_URL, "internal", access_token, user_token, group_id, group_name
+    )
