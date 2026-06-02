@@ -21,6 +21,7 @@ from groups import (
     get_or_fetch_company_id,
     get_team_driver,
     is_any_driver,
+    is_internal_group,
     mark_group_started,
     remove_group_token,
     remove_team_driver,
@@ -125,6 +126,10 @@ async def start_cmd(msg: types.Message):
         await msg.answer("✅ Group is registered! Bot is ready to use.")
         await send_action_log(chat_id, f"Group checked: {chat_name}")
 
+        # Internal team groups: no drivers, no quick buttons — just confirm.
+        if is_internal_group(chat_id):
+            return
+
         if is_any_driver(chat_id, msg.from_user.id):
             buttons = await get_quickbuttons(chat_id)
             keyboard = build_quickbuttons_keyboard(buttons)
@@ -145,6 +150,10 @@ async def set_driver_callback(callback: types.CallbackQuery):
     chat_id = callback.message.chat.id
     driver_id = callback.from_user.id
     chat_name = callback.message.chat.title or callback.from_user.full_name or "Private Chat"
+
+    if is_internal_group(chat_id):
+        await callback.answer()  # ack silently
+        return
 
     registered = await wait_for_server_and_check(chat_id, chat_name, callback.message, force_check=True)
     if not registered:
@@ -205,7 +214,7 @@ async def internal_team_cmd(msg: types.Message, command: CommandObject):
 
     result = await validate_bot_token_internal(access_token, token, chat_id, chat_name)
     if result.get("success"):
-        save_group_token(chat_id, token, chat_name)
+        save_group_token(chat_id, token, chat_name, group_type="internal")
         AWAITING_TOKEN.pop(chat_id, None)
         TOKEN_FAILED_ATTEMPTS.pop(chat_id, None)
 
@@ -272,6 +281,8 @@ async def setdriver_cmd(msg: types.Message):
     await forward_message_to_history_if_todo(msg)
 
     chat_id = msg.chat.id
+    if is_internal_group(chat_id):
+        return  # internal teams have no drivers
     group_id_str = str(chat_id)
 
     if msg.reply_to_message:
@@ -313,6 +324,8 @@ async def teamdriver_cmd(msg: types.Message):
     await forward_message_to_history_if_todo(msg)
 
     chat_id = msg.chat.id
+    if is_internal_group(chat_id):
+        return
 
     if get_group_driver(chat_id) is None:
         await msg.answer("⛔ No primary driver set. Use /setdriver first.")
@@ -369,6 +382,8 @@ async def sleep_cmd(msg: types.Message):
     await forward_message_to_history_if_todo(msg)
 
     chat_id = msg.chat.id
+    if is_internal_group(chat_id):
+        return
 
     company_id = await get_or_fetch_company_id(chat_id)
     if company_id:
@@ -388,6 +403,9 @@ async def sleep_callback(callback: types.CallbackQuery):
     from config import SLEEP_TIMER_URL, ssl_context
 
     chat_id = callback.message.chat.id
+    if is_internal_group(chat_id):
+        await callback.answer()
+        return
     hours = int(callback.data.split("_")[1])
 
     token = await get_api_token()
@@ -430,6 +448,8 @@ async def deletesleep_cmd(msg: types.Message):
     await forward_message_to_history_if_todo(msg)
 
     chat_id = msg.chat.id
+    if is_internal_group(chat_id):
+        return
 
     company_id = await get_or_fetch_company_id(chat_id)
     if company_id:
@@ -476,6 +496,11 @@ async def generic_text_handler(msg: types.Message):
 
     if chat_id not in STARTED_GROUPS and not AWAITING_TOKEN.get(chat_id):
         return
+
+    # Internal team groups: no drivers. Text handler'da faqat [TODO]-tagged
+    # xabarlar `forward_message_to_history_if_todo` orqali backend'ga uzatiladi;
+    # qolgan xabarlar (check-in, basket, classify+history, ticket) — hammasi skip.
+    _internal = is_internal_group(chat_id)
 
     if text == "🔄 Refresh":
         if not is_any_driver(chat_id, user_id):
@@ -551,13 +576,19 @@ async def generic_text_handler(msg: types.Message):
                 )
         return
 
-    checkin_text = build_checkin_checkout_text(msg, text)
-    checkin_processed = await process_checkin_checkout_text(checkin_text, chat_id, msg)
+    if not _internal:
+        checkin_text = build_checkin_checkout_text(msg, text)
+        checkin_processed = await process_checkin_checkout_text(checkin_text, chat_id, msg)
 
-    if checkin_processed:
-        return
+        if checkin_processed:
+            return
 
     if await forward_message_to_history_if_todo(msg, fallback_text=text):
+        return
+
+    # Internal team: classify / history-API / basket / ticket pipeline kerak emas.
+    # Faqat [TODO]-tagged xabarlar yuqorida forward bo'ldi; qolgan xabarlar shunchaki ignore.
+    if _internal:
         return
 
     registered = await wait_for_server_and_check(chat_id, chat_name, msg, force_check=False)
@@ -657,6 +688,9 @@ async def generic_text_handler(msg: types.Message):
 async def pending_bol_callback(callback: types.CallbackQuery):
     """Driver BOL tugmasini bosdi — pending PDF ni BOL sifatida tekshir."""
     chat_id = callback.message.chat.id
+    if is_internal_group(chat_id):
+        await callback.answer()
+        return
     group_key = str(chat_id)
     pending = GROUP_PENDING_IMAGES.get(group_key)
 
@@ -685,6 +719,9 @@ async def pending_bol_callback(callback: types.CallbackQuery):
 async def pending_docs_callback(callback: types.CallbackQuery):
     """Driver DOCS tugmasini bosdi — pending PDF ni oddiy hujjat sifatida saqlash."""
     chat_id = callback.message.chat.id
+    if is_internal_group(chat_id):
+        await callback.answer()
+        return
     group_key = str(chat_id)
     GROUP_PENDING_IMAGES.pop(group_key, None)
     timeout_task = GROUP_IMAGE_TIMEOUT_TASKS.pop(group_key, None)
@@ -707,6 +744,10 @@ async def handle_documents(msg: types.Message):
     user_id = msg.from_user.id
 
     if chat_id not in STARTED_GROUPS:
+        return
+
+    # Internal team: paperwork (BOL/POD) o'chirilgan — sukut bilan ignore.
+    if is_internal_group(chat_id):
         return
 
     chat_name = msg.chat.title or msg.from_user.full_name or "Group"
@@ -796,6 +837,10 @@ async def handle_voice(msg: types.Message):
     user_id = msg.from_user.id
 
     if chat_id not in STARTED_GROUPS:
+        return
+
+    # Internal team: voice check-in/out o'chirilgan — sukut bilan ignore.
+    if is_internal_group(chat_id):
         return
 
     chat_name = msg.chat.title or msg.from_user.full_name or "Group"

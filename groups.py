@@ -80,16 +80,34 @@ def mark_group_started(chat_id):
 
 # ====== Group tokens ======
 
-def save_group_token(group_id, token, group_name):
-    """Bitta guruh tokenini saqlash"""
+def save_group_token(group_id, token, group_name, group_type="standard"):
+    """Bitta guruh tokenini saqlash.
+
+    `group_type`: "standard" (oddiy /start orqali registratsiya) yoki "internal"
+    (/internal_team orqali — driver flow'lari o'chiriladi).
+    """
     data = load_all_group_tokens()
+    existing = data.get(str(group_id), {})
     data[str(group_id)] = {
+        **existing,
         "token": token,
         "group_name": group_name,
-        "saved_at": datetime.now().isoformat()
+        "type": group_type,
+        "saved_at": datetime.now().isoformat(),
     }
     save_all_group_tokens(data)
-    logger.info("💾 Token saved for group %s", group_id)
+    logger.info("💾 Token saved for group %s (type=%s)", group_id, group_type)
+
+
+def get_group_type(group_id) -> str:
+    """Guruh turini olish: 'standard' yoki 'internal'. Topilmasa 'standard'."""
+    data = load_all_group_tokens()
+    return data.get(str(group_id), {}).get("type", "standard")
+
+
+def is_internal_group(group_id) -> bool:
+    """True bo'lsa — bu guruh /internal_team orqali Internal Team sifatida ro'yxatdan o'tgan."""
+    return get_group_type(group_id) == "internal"
 
 
 def get_group_token(group_id):
