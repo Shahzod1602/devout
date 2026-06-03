@@ -11,8 +11,14 @@ services:
       - "8047:8045"        # host 8047 → container 8045
     env_file:
       - .env
+    environment:
+      # Vertex AI (Gemini paperwork) — API key emas, service account orqali.
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/vertex-server-key.json
     volumes:
       - bot_data:/app/data
+      # Vertex service account key (deploy paytida /root/devout ga tayyorlanadi,
+      # UID 999 o'qiy olishi uchun chown qilinadi). Read-only mount.
+      - /root/devout/vertex-server-key.json:/app/vertex-server-key.json:ro
 
 volumes:
   bot_data:

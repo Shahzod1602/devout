@@ -4,6 +4,7 @@ Secret'lar `.env` faylidan o'qiladi (python-dotenv). Local dev uchun loyiha
 root'da `.env` bo'lishi kerak; Docker'da `--env-file` orqali uzatiladi.
 Template uchun `.env.example` ga qarang.
 """
+import json
 import os
 import ssl
 from pathlib import Path
@@ -37,8 +38,29 @@ ssl_context = ssl.create_default_context(cafile=certifi.where())
 # === Secrets / API keys ===
 BOT_TOKEN = _require_env("BOT_TOKEN")
 OPENAI_API_KEY = _require_env("OPENAI_API_KEY")
-GEMINI_API_KEY = _require_env("GEMINI_API_KEY")
 GROQ_API_KEY = _require_env("GROQ_API_KEY")
+
+# === Vertex AI (Gemini) ===
+# Paperwork tahlili Vertex AI orqali ishlaydi (service account auth), eski
+# Gemini Developer API key emas — shuning uchun "API key expired" muammosi yo'q.
+# Credential `GOOGLE_APPLICATION_CREDENTIALS` orqali beriladi. Key fayli yo'q
+# bo'lsa (CI/test) sokin o'tib ketadi; loyiha None bilan qoladi va haqiqiy
+# chaqiruv faqat credential mavjud deploy'da amalga oshadi.
+VERTEX_CREDENTIALS_PATH = os.getenv(
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "/Users/shahzod/vertex-keys/vertex-server-key.json",
+)
+_vertex_key: dict = {}
+if VERTEX_CREDENTIALS_PATH and os.path.exists(VERTEX_CREDENTIALS_PATH):
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VERTEX_CREDENTIALS_PATH
+    with open(VERTEX_CREDENTIALS_PATH) as _vk:
+        _vertex_key = json.load(_vk)
+
+VERTEX_PROJECT = os.getenv(
+    "VERTEX_PROJECT",
+    _vertex_key.get("project_id") or _vertex_key.get("quota_project_id"),
+)
+VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
 
 # === Gemini model ===
 GEMINI_BOT_MODEL = "gemini-2.5-flash"

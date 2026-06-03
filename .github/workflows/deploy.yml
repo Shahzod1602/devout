@@ -17,5 +17,13 @@ jobs:
           script: |
             cd /root/devout
             git pull origin main
+
+            # Vertex AI credential — paperwork tahlili Gemini API key emas, Vertex
+            # AI (service account) ishlatadi. askai key'ini qayta ishlatamiz va
+            # container UID 999 o'qiy olishi uchun egasini moslaymiz.
+            cp /root/askai/secrets/vertex-server-key.json /root/devout/vertex-server-key.json
+            chown 999:999 /root/devout/vertex-server-key.json
+            chmod 600 /root/devout/vertex-server-key.json
+
             docker compose down
             docker compose up -d --build

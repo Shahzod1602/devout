@@ -5,15 +5,31 @@ import logging
 import time
 from io import BytesIO
 
-from config import GEMINI_API_KEY, GEMINI_BOT_MODEL
+from config import GEMINI_BOT_MODEL, VERTEX_LOCATION, VERTEX_PROJECT
 from google import genai
 from google.genai import types as genai_types
 from stats import record_gemini_call
 
 logger = logging.getLogger(__name__)
 
-# Single client instance — used by all paperwork Gemini calls.
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
+# Vertex AI (service account) orqali — API key emas, shuning uchun key muddati
+# tugashi muammosi yo'q. Credential `GOOGLE_APPLICATION_CREDENTIALS` orqali.
+# Lazy: client faqat birinchi haqiqiy chaqiruvda yaratiladi. Aks holda
+# credential'siz muhitda (CI/test) import paytida `DefaultCredentialsError`
+# bilan crash bo'lardi.
+_genai_client: genai.Client | None = None
+
+
+def get_genai_client() -> genai.Client:
+    """Vertex AI Gemini client'ini lazy ravishda yaratib qaytaradi."""
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(
+            vertexai=True,
+            project=VERTEX_PROJECT,
+            location=VERTEX_LOCATION,
+        )
+    return _genai_client
 
 
 def parse_gemini_json(raw: str) -> dict:
@@ -50,7 +66,7 @@ async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: i
         try:
             response = await loop.run_in_executor(
                 None,
-                lambda: genai_client.models.generate_content(
+                lambda: get_genai_client().models.generate_content(
                     model=GEMINI_BOT_MODEL,
                     # genai-sdk `contents` expects invariant list; mixed str+Part is OK at runtime
                     contents=[text_prompt, *image_parts],  # type: ignore[arg-type]

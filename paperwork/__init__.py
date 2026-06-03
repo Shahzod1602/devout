@@ -1,6 +1,6 @@
 """Paperwork analysis: PDF processing, Gemini calls, BOL ↔ load matching, US Mail support."""
 from .api import router as paperwork_api_router
-from .gemini import gemini_extract_once, genai_client, parse_gemini_json
+from .gemini import gemini_extract_once, get_genai_client, parse_gemini_json
 from .pdf import fix_image_orientation, pdf_to_images, process_file
 from .us_mail import analyze_us_mail_federal_gemini, is_us_mail_load
 from .validator import (
@@ -17,7 +17,7 @@ __all__ = [
     "pdf_to_images",
     "process_file",
     # Gemini
-    "genai_client",
+    "get_genai_client",
     "gemini_extract_once",
     "parse_gemini_json",
     # US Mail

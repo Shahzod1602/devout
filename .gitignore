@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# Vertex AI service account key (deploy paytida server'ga ko'chiriladi)
+vertex-server-key.json
+
 # Python
 __pycache__/
 *.py[cod]
