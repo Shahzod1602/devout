@@ -8,6 +8,7 @@ import logging
 import aiohttp
 import aiosqlite
 from aiogram import F, Router, types
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from checkin import build_checkin_checkout_text, process_checkin_checkout_text
@@ -744,6 +745,15 @@ async def pending_docs_callback(callback: types.CallbackQuery):
 #   pw_accept_<issueId> / pw_resend_<issueId>
 # Standard va internal team guruhlarda BIR XIL ishlaydi — silent-skip yo'q.
 
+async def _clear_markup(message: types.Message) -> None:
+    """Inline tugmalarni olib tashlash. Tugma allaqachon yo'q bo'lsa (takroriy
+    bosish), Telegram 'message is not modified' xatosini e'tiborsiz qoldiradi."""
+    try:
+        await message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+
+
 @router.callback_query(F.data.startswith("pw_accept_"))
 async def paperwork_accept_callback(callback: types.CallbackQuery):
     """Paperwork-issue Accept tugmasi: backend'ga `/paperwork-issues/{id}/accepted` POST."""
@@ -774,10 +784,17 @@ async def paperwork_accept_callback(callback: types.CallbackQuery):
             async with session.post(url, json={"reason": reason}, headers=headers,
                                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status in (200, 201, 204):
-                    await callback.message.edit_reply_markup(reply_markup=None)
+                    await _clear_markup(callback.message)
                     await callback.message.reply(f"✅ Accepted by {user_name}")
                     await callback.answer()
                     logger.info("✅ pw_accept %s by %s in group %s", issue_id, user_name, chat_id)
+                elif resp.status in (400, 404, 409):
+                    # Allaqachon qabul qilingan yoki issue topilmadi — takroriy
+                    # bosish. Xato emas: do'stona xabar + tugmalarni olib tashlash.
+                    body = await resp.text()
+                    logger.info("ℹ️ pw_accept %s already handled [%s]: %s", issue_id, resp.status, body[:200])
+                    await _clear_markup(callback.message)
+                    await callback.answer("ℹ️ Already accepted", show_alert=True)
                 else:
                     body = await resp.text()
                     logger.warning("⚠️ pw_accept %s failed [%s]: %s", issue_id, resp.status, body[:200])
@@ -812,10 +829,17 @@ async def paperwork_resend_callback(callback: types.CallbackQuery):
             async with session.post(url, json={}, headers=headers,
                                     timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status in (200, 201, 204):
-                    await callback.message.edit_reply_markup(reply_markup=None)
+                    await _clear_markup(callback.message)
                     await callback.message.reply(f"🔄 Resend requested by {user_name}")
                     await callback.answer()
                     logger.info("🔄 pw_resend %s by %s in group %s", issue_id, user_name, chat_id)
+                elif resp.status in (400, 404, 409):
+                    # Allaqachon so'ralgan yoki issue topilmadi — takroriy bosish.
+                    # Xato emas: do'stona xabar + tugmalarni olib tashlash.
+                    body = await resp.text()
+                    logger.info("ℹ️ pw_resend %s already handled [%s]: %s", issue_id, resp.status, body[:200])
+                    await _clear_markup(callback.message)
+                    await callback.answer("ℹ️ Resend already requested", show_alert=True)
                 else:
                     body = await resp.text()
                     logger.warning("⚠️ pw_resend %s failed [%s]: %s", issue_id, resp.status, body[:200])
