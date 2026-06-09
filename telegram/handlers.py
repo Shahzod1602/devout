@@ -939,7 +939,10 @@ async def handle_documents(msg: types.Message):
     except Exception as e:
         await send_error_to_group(f"❌ Document verification error: {e}", group_id=chat_id)
         logger.exception("❌ Document verification error")
-        await msg.answer(f"❌ Document verification failed: {str(e)}")
+        if "file is too big" in str(e).lower():
+            await msg.answer("❌ File is too big to analyze.")
+        else:
+            await msg.answer(f"❌ Document verification failed: {str(e)}")
 
 
 # ====== Voice / audio (check-in/out from speech) ======
