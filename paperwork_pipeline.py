@@ -288,6 +288,13 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                 address_notes = verify_data.get("address_notes", verify_data.get("notes", ""))[:200]
                 pod_notes = verify_data.get("pod_notes", verify_data.get("notes", ""))[:200]
 
+                # AskAI couldn't parse the document → show a friendly note instead of
+                # leaking a raw error (e.g. "Error: Invalid JSON response") into the card.
+                if verify_data.get("analysis_failed") or address_notes.startswith("Error:"):
+                    address_notes = "Could not analyze — please Resend."
+                if verify_data.get("analysis_failed") or pod_notes.startswith("Error:"):
+                    pod_notes = "Could not analyze — please Resend."
+
                 pod_paperwork_data = {
                     "loadId": new_load_id,
                     "weight": {"isHealthy": True, "summary": "N/A"},
