@@ -285,14 +285,32 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                 verify_data = result.get("data", {})
                 address_match = verify_data.get("address_match", False)
                 pod_valid = verify_data.get("pod_valid", False)
-                address_notes = verify_data.get("address_notes", verify_data.get("notes", ""))[:200]
-                pod_notes = verify_data.get("pod_notes", verify_data.get("notes", ""))[:200]
+                address_notes = verify_data.get("address_notes", "")[:200]
+                pod_notes = verify_data.get("pod_notes", "")[:200]
+
+                analysis_failed = bool(verify_data.get("analysis_failed"))
+                bol_pages = verify_data.get("bol_pages")
+                pod_pages = verify_data.get("pod_pages")
+                # AskAI sahifalar soni teng bo'lmasa tahlilni o'tkazib yuborib, faqat
+                # umumiy `notes` qaytaradi — bu xabar faqat Page count kriteriyasiga
+                # tegishli, signature/address kriteriyalariga sizib chiqmasligi kerak.
+                page_mismatch = (
+                    not analysis_failed
+                    and bol_pages is not None and pod_pages is not None
+                    and bol_pages != pod_pages
+                )
+
+                if page_mismatch:
+                    address_match = False
+                    pod_valid = False
+                    address_notes = "Not checked — BOL and POD page counts must match first."
+                    pod_notes = "Not checked — BOL and POD page counts must match first."
 
                 # AskAI couldn't parse the document → show a friendly note instead of
                 # leaking a raw error (e.g. "Error: Invalid JSON response") into the card.
-                if verify_data.get("analysis_failed") or address_notes.startswith("Error:"):
+                if analysis_failed or address_notes.startswith("Error:"):
                     address_notes = "Could not analyze — please Resend."
-                if verify_data.get("analysis_failed") or pod_notes.startswith("Error:"):
+                if analysis_failed or pod_notes.startswith("Error:"):
                     pod_notes = "Could not analyze — please Resend."
 
                 pod_paperwork_data = {
@@ -300,9 +318,17 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                     "weight": {"isHealthy": True, "summary": "N/A"},
                     "signature": {"isHealthy": pod_valid, "summary": pod_notes if pod_notes else ("Found" if pod_valid else "Not found")},
                     "poNumber": {"isHealthy": True, "summary": "N/A"},
-                    "pickUpAddress": {"isHealthy": address_match, "summary": address_notes},
-                    "deliveryAddressAddress": {"isHealthy": address_match, "summary": address_notes},
+                    "pickUpAddress": {"isHealthy": address_match, "summary": address_notes if address_notes else ("Match" if address_match else "Mismatch")},
+                    "deliveryAddressAddress": {"isHealthy": address_match, "summary": address_notes if address_notes else ("Match" if address_match else "Mismatch")},
                 }
+                if bol_pages is not None and pod_pages is not None:
+                    pod_paperwork_data["pageCount"] = {
+                        "isHealthy": not page_mismatch,
+                        "summary": (
+                            f"BOL has {bol_pages} page(s), POD has {pod_pages} page(s). They must be equal."
+                            if page_mismatch else str(pod_pages)
+                        ),
+                    }
                 pod_post_result = await post_paperwork_issue(
                     pod_paperwork_data, file_bytes_value, file_name or "pod_document",
                     file_type=2, group_id=chat_id, message_id=msg.message_id,
