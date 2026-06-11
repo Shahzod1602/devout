@@ -168,6 +168,15 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
             "TripNumber.Summary": result_data.get("tripNumber", {}).get("summary", "N/A"),
             "SealNumber.IsHealthy": str(result_data.get("sealNumber", {}).get("isHealthy", True)).lower(),
             "SealNumber.Summary": result_data.get("sealNumber", {}).get("summary", "N/A"),
+            # Big-box (Costco / Walmart / Target) POD qo'shimcha hujjatlari. Default
+            # isHealthy=true / "N/A" — oddiy (big-box bo'lmagan) PODlar bu kategoriyalarda
+            # muammoli ko'rinmasligi uchun (RouteNumber/SealNumber bilan bir xil naqsh).
+            "TrailerControlRecord.IsHealthy": str(result_data.get("trailerControlRecord", {}).get("isHealthy", True)).lower(),
+            "TrailerControlRecord.Summary": result_data.get("trailerControlRecord", {}).get("summary", "N/A"),
+            "DeliveryReport.IsHealthy": str(result_data.get("deliveryReport", {}).get("isHealthy", True)).lower(),
+            "DeliveryReport.Summary": result_data.get("deliveryReport", {}).get("summary", "N/A"),
+            "Sticker.IsHealthy": str(result_data.get("sticker", {}).get("isHealthy", True)).lower(),
+            "Sticker.Summary": result_data.get("sticker", {}).get("summary", "N/A"),
         }
 
         if message_id is not None:

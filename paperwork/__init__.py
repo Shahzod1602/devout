@@ -1,5 +1,6 @@
 """Paperwork analysis: PDF processing, Gemini calls, BOL ↔ load matching, US Mail support."""
 from .api import router as paperwork_api_router
+from .big_box import analyze_big_box_pod_gemini, is_big_box_delivery
 from .gemini import gemini_extract_once, get_genai_client, parse_gemini_json
 from .pdf import fix_image_orientation, pdf_to_images, process_file
 from .us_mail import analyze_us_mail_federal_gemini, is_us_mail_load
@@ -23,6 +24,9 @@ __all__ = [
     # US Mail
     "is_us_mail_load",
     "analyze_us_mail_federal_gemini",
+    # Big-box (Costco / Walmart / Target)
+    "is_big_box_delivery",
+    "analyze_big_box_pod_gemini",
     # Validator
     "format_ratecon_address",
     "count_stops_by_type",

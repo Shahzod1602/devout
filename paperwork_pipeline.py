@@ -30,7 +30,13 @@ from db import (
 )
 from external import post_paperwork_issue, verify_delivery
 from messaging import send_error_to_group
-from paperwork import count_stops_by_type, determine_file_type
+from paperwork import (
+    analyze_big_box_pod_gemini,
+    count_stops_by_type,
+    determine_file_type,
+    is_big_box_delivery,
+    process_file,
+)
 from PIL import Image
 from state import GROUP_IMAGE_TIMEOUT_TASKS, GROUP_PENDING_IMAGES, bot, client
 
@@ -329,6 +335,25 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                             if page_mismatch else str(pod_pages)
                         ),
                     }
+
+                # Costco / Walmart / Target ga yetkazib berishda broker POD bilan birga
+                # Trailer Control Record, Delivery Report va Sticker hujjatlarini talab
+                # qiladi. Delivery stop shu retailerlardan biri bo'lsa — POD yuklamasini
+                # Gemini bilan tahlil qilib, 3 kategoriyani paperwork issue'ga qo'shamiz.
+                is_big_box, retailer = is_big_box_delivery(stops)
+                if is_big_box:
+                    logger.info("📦 Load #%s delivery → %s, qo'shimcha hujjatlar tekshirilmoqda...",
+                                load_display_id, retailer)
+                    try:
+                        pod_images = await process_file(file_bytes_value, file_name or "pod_document")
+                        bb = await analyze_big_box_pod_gemini(pod_images, retailer)
+                        pod_paperwork_data["trailerControlRecord"] = bb["trailerControlRecord"]
+                        pod_paperwork_data["deliveryReport"] = bb["deliveryReport"]
+                        pod_paperwork_data["sticker"] = bb["sticker"]
+                    except Exception as e:
+                        logger.exception("⚠️ Big-box POD tahlili xatosi (Load #%s)", load_display_id)
+                        await send_error_to_group(f"⚠️ {retailer} qo'shimcha hujjat tahlili xatosi: {e}", group_id=chat_id)
+
                 pod_post_result = await post_paperwork_issue(
                     pod_paperwork_data, file_bytes_value, file_name or "pod_document",
                     file_type=2, group_id=chat_id, message_id=msg.message_id,
