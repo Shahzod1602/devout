@@ -60,10 +60,10 @@ VERTEX_PROJECT = os.getenv(
     "VERTEX_PROJECT",
     _vertex_key.get("project_id") or _vertex_key.get("quota_project_id"),
 )
-VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")  # gemini-3-flash-preview is only served on "global"
+VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")  # gemini-3.5-flash is only served on "global"
 
 # === Gemini model ===
-GEMINI_BOT_MODEL = "gemini-3-flash-preview"  # Gemini 3 Flash (~+15% extraction accuracy vs 2.5-flash)
+GEMINI_BOT_MODEL = "gemini-3.5-flash"  # Gemini 3.5 Flash (GA; smarter + faster than 3-flash, better extraction)
 
 # === Error logger Telegram bot ===
 ERROR_BOT_TOKEN = _require_env("ERROR_BOT_TOKEN")
