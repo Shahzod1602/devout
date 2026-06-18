@@ -409,7 +409,9 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
     else:
         bol_data = check_result.get('bol_data', {})
         available_loads = check_result.get('available_loads', 0)
-        logger.debug("📋 else block entered: bol_data=%s, available_loads=%s", bol_data, available_loads)
+        backend_message = check_result.get('message') or ''
+        logger.debug("📋 else block entered: message=%s, bol_data=%s, available_loads=%s",
+                     backend_message, bol_data, available_loads)
 
         pickup = bol_data.get('pickup', 'not found')
         delivery = bol_data.get('delivery', 'not found')
@@ -418,14 +420,22 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
             load_id = check_result['loadId']
             await msg.answer(f"⚠️ Load #{load_id} BOL verified, but could not save to server.\nPlease try again or contact support.")
             await checking_msg.delete()
-            return "skipped", "BOL verified but could not save to server", load_id
+            return "skipped", backend_message or "BOL verified but could not save to server", load_id
+
+        # Log group uchun aniq sabab — backend qaytargan haqiqiy `message`
+        # (masalan: "Document is not a BOL", "BOL did not match any load",
+        # "Bu guruh uchun hech qanday load topilmadi"). Avval hammasi
+        # "Could not extract BOL data" ga yig'ilardi — endi aniq sabab ko'rinadi.
+        reason = backend_message or "Could not extract BOL data from document"
+        if available_loads:
+            reason = f"{reason} ({available_loads} load(s) available)"
 
         if pickup == 'not found' and delivery == 'not found':
-            logger.info("📄 Could not extract BOL data from document")
+            logger.info("📄 Skipped: %s", reason)
             await checking_msg.delete()
-            return "skipped", "Could not extract BOL data from document", None
+            return "skipped", reason, None
 
         logger.info("📋 Sending 'BOL did not match' message to user")
         await checking_msg.delete()
         await msg.answer("❌ BOL did not match any load.")
-        return "skipped", f"BOL did not match any load (pickup={pickup}, delivery={delivery})", None
+        return "skipped", reason, None
