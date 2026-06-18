@@ -29,7 +29,7 @@ from db import (
     init_load_in_cache,
 )
 from external import post_paperwork_issue, verify_delivery
-from messaging import send_error_to_group
+from messaging import send_error_to_group, send_paperwork_to_log_group
 from paperwork import (
     analyze_big_box_pod_gemini,
     count_stops_by_type,
@@ -164,7 +164,32 @@ async def _send_image_prompt(chat_id: int, group_key: str, msg: types.Message):
 # ====== Main pipeline ======
 
 async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, msg: types.Message, answer_msg=None):
-    """PDF ni local /check-bol endpoint'ga yuborib, javobga qarab BOL/POD/Late Slip oqimini bajarish."""
+    """PDF ni local /check-bol endpoint'ga yuborib, javobga qarab BOL/POD/Late Slip oqimini bajarish.
+
+    Har bir hujjat — selected (tahlil qilindi) bo'lsin, skipped (o'tkazib yuborildi)
+    bo'lsin — natijasi va sababi bilan PAPERWORK_LOG_GROUP_ID guruhiga forward
+    qilinadi. Asl ish mantig'i `_run_bol_check_impl` ichida; bu wrapper faqat
+    (status, reason, load_id) ni olib, faylni log guruhga yuboradi.
+    """
+    status, reason, load_id = "skipped", "Unknown outcome", None
+    try:
+        status, reason, load_id = await _run_bol_check_impl(
+            chat_id, file_bytes_value, file_name, msg, answer_msg
+        )
+    except Exception as e:
+        reason = f"Unexpected error: {e}"
+        raise
+    finally:
+        await send_paperwork_to_log_group(
+            file_bytes_value, file_name, status, reason, chat_id=chat_id, load_id=load_id,
+        )
+
+
+async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: str, msg: types.Message, answer_msg=None):
+    """run_bol_check ichki logikasi. (status, reason, load_id) qaytaradi.
+
+    status: "selected" | "skipped". Har bir terminal nuqtada aniq sabab qaytaradi.
+    """
     checking_msg = answer_msg or await msg.answer("🔍 Checking document...")
 
     files = {'bol': (file_name, file_bytes_value, 'application/octet-stream')}
@@ -182,7 +207,7 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                 await send_error_to_group(f"❌ check-bol 422 error: {response.text}", group_id=chat_id)
                 await checking_msg.delete()
                 await msg.answer("❌ Document check failed (invalid request). Please try again.")
-                return
+                return "skipped", "check-bol 422 (invalid request)", None
             logger.debug("🔵 HTTP %s received, parsing JSON...", response.status_code)
             check_result = response.json()
             logger.debug("🔵 JSON parsed OK: %s", list(check_result.keys()))
@@ -190,12 +215,12 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
         await send_error_to_group("❌ run_bol_check TIMEOUT", group_id=chat_id)
         await checking_msg.delete()
         await msg.answer("⏱️ Document check timed out. Please try again.")
-        return
+        return "skipped", "check-bol timed out", None
     except Exception as e:
         await send_error_to_group(f"❌ run_bol_check EXCEPTION: {e}", group_id=chat_id)
         await checking_msg.delete()
         await msg.answer(f"❌ Document check failed: {e}")
-        return
+        return "skipped", f"check-bol request failed: {e}", None
 
     logger.info("📋 check-bol API response: success=%s, message=%s",
                 check_result.get('success'), check_result.get('message', 'N/A')[:100])
@@ -232,7 +257,7 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
         if file_type == -1:
             await checking_msg.delete()
             await msg.answer(f"ℹ️ Load #{load_display_id} is already complete. No document needed.")
-            return
+            return "skipped", "Load already complete — no document needed", load_display_id
 
         if file_type == 0:
             file_type = 1
@@ -242,7 +267,7 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
             paperwork = check_result.get('paperwork_result', {})
             if not paperwork:
                 await msg.answer(f"❌ Late Slip uchun paperwork data topilmadi (Load #{load_display_id})")
-                return
+                return "skipped", "Late Slip: no paperwork data", load_display_id
             late_post_result = await post_paperwork_issue(
                 paperwork, file_bytes_value, file_name or "late_slip_document",
                 file_type=4, group_id=chat_id, message_id=msg.message_id,
@@ -250,10 +275,11 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
             if late_post_result["success"]:
                 logger.info("✅ Late Slip paperwork issue yuborildi! Load #%s", new_load_id)
                 await msg.answer(f"✅ Load #{load_display_id} Late Slip received!")
+                return "selected", "Late Slip received", load_display_id
             else:
                 await send_error_to_group(f"❌ Late Slip paperwork issue xatosi: {late_post_result.get('error')}", group_id=chat_id)
                 await msg.answer(f"❌ Late Slip yuborilmadi (Load #{load_display_id}). Please try again.")
-            return
+                return "skipped", f"Late Slip post failed: {late_post_result.get('error')}", load_display_id
 
         if file_type == 1:
             await add_bol_to_cache(chat_id, new_load_id, msg.message_id, file_bytes_value)
@@ -275,12 +301,14 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                 else:
                     await send_error_to_group(f"❌ BOL paperwork issue xatosi: {bol_post_result.get('error')}", group_id=chat_id)
 
+            return "selected", f"BOL #{bols_count}/{required_bols} received", new_load_id
+
         elif file_type == 2:
             await checking_msg.delete()
             bol_bytes = await get_last_bol(chat_id, new_load_id)
             if not bol_bytes:
                 logger.warning("⚠️ No BOL on file for group=%s, load=%s", chat_id, new_load_id)
-                return
+                return "skipped", "POD received but no BOL on file yet", new_load_id
 
             result = await verify_delivery(bol_bytes, file_bytes_value)
             if result.get("success"):
@@ -307,10 +335,14 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                 )
 
                 if page_mismatch:
-                    address_match = False
-                    pod_valid = False
-                    address_notes = "Not checked — BOL and POD page counts must match first."
-                    pod_notes = "Not checked — BOL and POD page counts must match first."
+                    # Page count teng emas — signature/address tahlili o'tkazib
+                    # yuborilgan. Bu kriteriyalarni xatosiz (neytral) qoldiramiz,
+                    # muammo faqat Page count bo'limida ko'rinsin (boshqa joyga
+                    # sizib chiqmasin).
+                    address_match = True
+                    pod_valid = True
+                    address_notes = "—"
+                    pod_notes = "—"
 
                 # AskAI couldn't parse the document → show a friendly note instead of
                 # leaking a raw error (e.g. "Error: Invalid JSON response") into the card.
@@ -364,10 +396,16 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
                     await send_error_to_group(f"❌ POD paperwork issue xatosi: {pod_post_result.get('error')}", group_id=chat_id)
 
                 await msg.answer(f"✅ Load #{load_display_id} POD #{pods_count}/{required_pods} received!")
+                return "selected", f"POD #{pods_count}/{required_pods} received", new_load_id
             else:
                 error_msg = result.get('error', 'Unknown error')
                 await send_error_to_group(f"❌ POD verification error: {error_msg}", group_id=chat_id)
                 await msg.answer(f"❌ POD verification failed for Load #{load_display_id}. Please try again.")
+                return "skipped", f"POD verification failed: {error_msg}", new_load_id
+
+        # file_type yuqoridagi if/elif'larga tushmadi (kutilmagan qiymat)
+        return "skipped", f"Unhandled file_type={file_type}", new_load_id
+
     else:
         bol_data = check_result.get('bol_data', {})
         available_loads = check_result.get('available_loads', 0)
@@ -380,13 +418,14 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
             load_id = check_result['loadId']
             await msg.answer(f"⚠️ Load #{load_id} BOL verified, but could not save to server.\nPlease try again or contact support.")
             await checking_msg.delete()
-            return
+            return "skipped", "BOL verified but could not save to server", load_id
 
         if pickup == 'not found' and delivery == 'not found':
             logger.info("📄 Could not extract BOL data from document")
             await checking_msg.delete()
-            return
+            return "skipped", "Could not extract BOL data from document", None
 
         logger.info("📋 Sending 'BOL did not match' message to user")
         await checking_msg.delete()
         await msg.answer("❌ BOL did not match any load.")
+        return "skipped", f"BOL did not match any load (pickup={pickup}, delivery={delivery})", None

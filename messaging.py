@@ -12,9 +12,9 @@ from datetime import datetime
 
 import aiohttp
 import requests
-from config import ACTION_LOGS_URL, BOT_TOKEN, ENV_LABEL, ERROR_GROUP_ID, ssl_context
+from config import ACTION_LOGS_URL, BOT_TOKEN, ENV_LABEL, ERROR_GROUP_ID, PAPERWORK_LOG_GROUP_ID, ssl_context
 from external import get_api_token
-from state import error_bot, message_queue
+from state import bot, error_bot, message_queue
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,43 @@ async def send_error_to_group(message: str, group_id=None):
         )
     except Exception:
         logger.exception("send_error_to_group: error_bot.send_message failed")
+
+
+async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status: str,
+                                      reason: str, chat_id=None, load_id=None):
+    """Har bir paperwork faylini PAPERWORK_LOG_GROUP_ID guruhiga forward qilish.
+
+    status: "selected" (tahlil qilindi) yoki "skipped" (o'tkazib yuborildi).
+    Caption'da: status, sabab, manba guruh nomi va Load # (bo'lsa).
+    PAPERWORK_LOG_GROUP_ID=0 bo'lsa hech narsa qilmaydi (feature o'chiq).
+    """
+    if not PAPERWORK_LOG_GROUP_ID:
+        return
+    from aiogram.types import BufferedInputFile
+
+    # Late import: groups ham bu modulni import qiladi (circular dependency).
+    from groups import load_all_group_tokens
+    try:
+        group_label = ""
+        if chat_id is not None:
+            gid_str = str(chat_id)
+            data = load_all_group_tokens()
+            group_name = data.get(gid_str, {}).get("group_name", "")
+            group_label = f" • {group_name}" if group_name else f" • group:{gid_str}"
+
+        is_selected = status == "selected"
+        icon = "✅" if is_selected else "⏭️"
+        head = "SELECTED" if is_selected else "SKIPPED"
+        load_part = f" — Load #{load_id}" if load_id not in (None, "", "N/A") else ""
+        caption = f"{icon} {head}{load_part}\n📝 {reason}\n📦 [{ENV_LABEL}]{group_label}"
+
+        await bot.send_document(
+            PAPERWORK_LOG_GROUP_ID,
+            BufferedInputFile(file_bytes, filename=file_name or "document.pdf"),
+            caption=caption[:1024],
+        )
+    except Exception:
+        logger.exception("send_paperwork_to_log_group: failed to forward file")
 
 
 async def send_action_log(group_id, message):
