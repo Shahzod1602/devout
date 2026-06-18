@@ -64,8 +64,17 @@ async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status:
         group_label = ""
         if chat_id is not None:
             gid_str = str(chat_id)
-            data = load_all_group_tokens()
-            group_name = data.get(gid_str, {}).get("group_name", "")
+            group_name = ""
+            # Joriy guruh nomini avval Telegram'dan olamiz (eng ishonchli).
+            try:
+                chat = await bot.get_chat(chat_id)
+                group_name = chat.title or chat.full_name or ""
+            except Exception:
+                logger.debug("send_paperwork_to_log_group: get_chat failed for %s", gid_str, exc_info=True)
+            # Bo'lmasa — keshlangan token ma'lumotidan.
+            if not group_name:
+                data = load_all_group_tokens()
+                group_name = data.get(gid_str, {}).get("group_name", "")
             group_label = f" • {group_name}" if group_name else f" • group:{gid_str}"
 
         is_selected = status == "selected"
