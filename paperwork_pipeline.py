@@ -181,7 +181,8 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
         raise
     finally:
         await send_paperwork_to_log_group(
-            file_bytes_value, file_name, status, reason, chat_id=chat_id, load_id=load_id,
+            file_bytes_value, file_name, status, reason,
+            chat_id=chat_id, load_id=load_id, message_id=msg.message_id,
         )
 
 

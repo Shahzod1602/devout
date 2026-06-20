@@ -6,6 +6,7 @@
 - message_worker: message_queue'dan xabarlarni o'qib Telegram'ga yuborish
 """
 import asyncio
+import html
 import logging
 import re
 from datetime import datetime
@@ -47,11 +48,12 @@ async def send_error_to_group(message: str, group_id=None):
 
 
 async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status: str,
-                                      reason: str, chat_id=None, load_id=None):
+                                      reason: str, chat_id=None, load_id=None, message_id=None):
     """Har bir paperwork faylini PAPERWORK_LOG_GROUP_ID guruhiga forward qilish.
 
     status: "selected" (tahlil qilindi) yoki "skipped" (o'tkazib yuborildi).
-    Caption'da: status, sabab, manba guruh nomi va Load # (bo'lsa).
+    Caption'da: status, sabab, manba guruh nomi, Load # (bo'lsa) va asl xabarga
+    "Open original" message-link (message_id berilgan bo'lsa).
     PAPERWORK_LOG_GROUP_ID=0 bo'lsa hech narsa qilmaydi (feature o'chiq).
     """
     if not PAPERWORK_LOG_GROUP_ID:
@@ -62,13 +64,16 @@ async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status:
     from groups import load_all_group_tokens
     try:
         group_label = ""
+        msg_link = ""
         if chat_id is not None:
             gid_str = str(chat_id)
             group_name = ""
+            username = None
             # Joriy guruh nomini avval Telegram'dan olamiz (eng ishonchli).
             try:
                 chat = await bot.get_chat(chat_id)
                 group_name = chat.title or chat.full_name or ""
+                username = chat.username
             except Exception:
                 logger.debug("send_paperwork_to_log_group: get_chat failed for %s", gid_str, exc_info=True)
             # Bo'lmasa — keshlangan token ma'lumotidan.
@@ -77,16 +82,34 @@ async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status:
                 group_name = data.get(gid_str, {}).get("group_name", "")
             group_label = f" • {group_name}" if group_name else f" • group:{gid_str}"
 
+            # Asl xabarga message-link. Public guruh (username bor) bo'lsa
+            # t.me/<username>/<id>, aks holda private supergroup t.me/c/<internal>/<id>
+            # (chat_id'dan "-100" prefiksi olib tashlanadi). Oddiy guruhlar (-100 emas)
+            # uchun message-link mavjud emas — o'tkazib yuboriladi.
+            if message_id:
+                if username:
+                    msg_link = f"https://t.me/{username}/{message_id}"
+                elif gid_str.startswith("-100"):
+                    msg_link = f"https://t.me/c/{gid_str[4:]}/{message_id}"
+
         is_selected = status == "selected"
         icon = "✅" if is_selected else "⏭️"
         head = "SELECTED" if is_selected else "SKIPPED"
-        load_part = f" — Load #{load_id}" if load_id not in (None, "", "N/A") else ""
-        caption = f"{icon} {head}{load_part}\n📝 {reason}\n📦 [{ENV_LABEL}]{group_label}"
+        load_part = f" — Load #{html.escape(str(load_id))}" if load_id not in (None, "", "N/A") else ""
+        # parse_mode=HTML — dinamik qismlarni (sabab, guruh nomi) escape qilamiz va
+        # so'ng link anchor'ni qo'shamiz. Caption'ni xom HTML holida kesib qo'ymaymiz
+        # (tag o'rtasidan kesilmasligi uchun sababni oldindan qisqartiramiz).
+        safe_reason = html.escape((reason or "")[:700])
+        safe_group_label = html.escape(group_label)
+        caption = f"{icon} {head}{load_part}\n📝 {safe_reason}\n📦 [{ENV_LABEL}]{safe_group_label}"
+        if msg_link:
+            caption += f'\n🔗 <a href="{msg_link}">Open original</a>'
 
         await bot.send_document(
             PAPERWORK_LOG_GROUP_ID,
             BufferedInputFile(file_bytes, filename=file_name or "document.pdf"),
-            caption=caption[:1024],
+            caption=caption,
+            parse_mode="HTML",
         )
     except Exception:
         logger.exception("send_paperwork_to_log_group: failed to forward file")
