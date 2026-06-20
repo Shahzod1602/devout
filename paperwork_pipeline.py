@@ -29,7 +29,7 @@ from db import (
     init_load_in_cache,
 )
 from external import post_paperwork_issue, verify_delivery
-from messaging import send_error_to_group, send_paperwork_to_log_group
+from messaging import remember_paperwork_msg_link, send_error_to_group, send_paperwork_to_log_group
 from paperwork import (
     analyze_big_box_pod_gemini,
     count_stops_by_type,
@@ -230,6 +230,12 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
         _db_id = check_result.get('loadDbId')
         new_load_id = _db_id if _db_id is not None else check_result.get('loadId', 'N/A')
         load_display_id = check_result.get('loadId', new_load_id)
+
+        # Internal-team / driver paperwork-notify backend tomonidan render qilinadi
+        # ("POD #<RefNumber>") va faqat issueId tugmasini oladi — asl link bo'lmaydi.
+        # RefNumber == load_display_id, shuning uchun asl hujjat xabari linkini shu
+        # bo'yicha eslab qolamiz; message_worker notify matniga "Open original" qo'shadi.
+        remember_paperwork_msg_link(load_display_id, chat_id, msg.message_id)
 
         stops = check_result.get('stops', [])
         is_late_slip = bool(check_result.get('isLateSlip', False))

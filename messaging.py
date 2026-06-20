@@ -15,9 +15,46 @@ import aiohttp
 import requests
 from config import ACTION_LOGS_URL, BOT_TOKEN, ENV_LABEL, ERROR_GROUP_ID, PAPERWORK_LOG_GROUP_ID, ssl_context
 from external import get_api_token
-from state import bot, error_bot, message_queue
+from state import PAPERWORK_MSG_LINKS, bot, error_bot, message_queue
 
 logger = logging.getLogger(__name__)
+
+# Eng ko'pi bilan shuncha RefNumber->link yozuvini saqlaymiz (xotira o'smasligi uchun).
+PAPERWORK_LINK_CAP = 2000
+
+
+def build_message_link(chat_id, message_id, username: str | None = None) -> str:
+    """Telegram xabariga to'g'ridan-to'g'ri link quradi.
+
+    - Public guruh (username bor) → https://t.me/<username>/<message_id>
+    - Private supergroup (id "-100" bilan boshlanadi) → https://t.me/c/<internal>/<message_id>
+    - Oddiy guruh (id "-100" emas) yoki message_id yo'q → "" (link mavjud emas).
+    """
+    if not message_id or chat_id is None:
+        return ""
+    if username:
+        return f"https://t.me/{username}/{message_id}"
+    gid_str = str(chat_id)
+    if gid_str.startswith("-100"):
+        return f"https://t.me/c/{gid_str[4:]}/{message_id}"
+    return ""
+
+
+def remember_paperwork_msg_link(ref, chat_id, message_id) -> None:
+    """RefNumber (load_display_id) bo'yicha asl hujjat xabari linkini cache qiladi.
+
+    Backend paperwork-notify xabarini "POD #<RefNumber>" deb render qilib yuboradi,
+    lekin payload'da asl link bo'lmaydi — message_worker shu cache'dan topib qo'shadi.
+    """
+    if ref in (None, "", "N/A"):
+        return
+    link = build_message_link(chat_id, message_id)
+    if not link:
+        return
+    PAPERWORK_MSG_LINKS[str(ref)] = link
+    if len(PAPERWORK_MSG_LINKS) > PAPERWORK_LINK_CAP:
+        # Insertion-order: eng eski yozuvni chiqarib tashlaymiz.
+        PAPERWORK_MSG_LINKS.pop(next(iter(PAPERWORK_MSG_LINKS)), None)
 
 
 async def send_error_to_group(message: str, group_id=None):
@@ -82,15 +119,9 @@ async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status:
                 group_name = data.get(gid_str, {}).get("group_name", "")
             group_label = f" • {group_name}" if group_name else f" • group:{gid_str}"
 
-            # Asl xabarga message-link. Public guruh (username bor) bo'lsa
-            # t.me/<username>/<id>, aks holda private supergroup t.me/c/<internal>/<id>
-            # (chat_id'dan "-100" prefiksi olib tashlanadi). Oddiy guruhlar (-100 emas)
-            # uchun message-link mavjud emas — o'tkazib yuboriladi.
+            # Asl xabarga to'g'ridan-to'g'ri link (private supergroup yoki public username).
             if message_id:
-                if username:
-                    msg_link = f"https://t.me/{username}/{message_id}"
-                elif gid_str.startswith("-100"):
-                    msg_link = f"https://t.me/c/{gid_str[4:]}/{message_id}"
+                msg_link = build_message_link(chat_id, message_id, username)
 
         is_selected = status == "selected"
         icon = "✅" if is_selected else "⏭️"
@@ -201,6 +232,20 @@ async def message_worker():
         try:
             data = await message_queue.get()
             message_text = _linkify_maps(data.message)
+            # Paperwork-issue notify (Accept/Resend tugmalari bilan) — internal team /
+            # driver guruhga keladigan xabarga asl hujjat xabariga "Open original" link
+            # qo'shamiz. Notify payload'ida link bo'lmaydi; uni RefNumber bo'yicha
+            # cache'dan topamiz (paperwork pipeline hujjatni ishlaganda yozib qo'ygan).
+            if data.inline_buttons and any(
+                (btn.callback_data or "").startswith("pw_accept_")
+                for row in data.inline_buttons for btn in row
+            ):
+                first_line = data.message.split("\n", 1)[0]
+                if "#" in first_line:
+                    ref = first_line.split("#", 1)[1].strip()
+                    link = PAPERWORK_MSG_LINKS.get(ref)
+                    if link:
+                        message_text += f'\n\n🔗 <a href="{link}">Open original</a>'
             send_payload = {"chat_id": data.group_id, "text": message_text, "parse_mode": "HTML"}
             if data.inline_buttons:
                 # Pydantic InlineButton'larni Telegram Bot API ko'rinishiga aylantirish.

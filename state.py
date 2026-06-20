@@ -45,6 +45,12 @@ GROUP_PENDING_IMAGES: dict = {}              # group_id (str) -> {"pages": [...]
 GROUP_IMAGE_DEBOUNCE_TASKS: dict = {}        # group_id (str) -> asyncio.Task
 GROUP_IMAGE_TIMEOUT_TASKS: dict = {}         # group_id (str) -> asyncio.Task
 
+# Paperwork-notify "Open original" link correlation. Backend internal-team/driver
+# notify xabarini render qilib /send-message orqali yuboradi — payload'da asl
+# hujjat linki bo'lmaydi. Bot hujjatni ishlaganda RefNumber (load_display_id) ->
+# asl xabar linkini shu yerga yozadi; message_worker notify matniga qo'shadi.
+PAPERWORK_MSG_LINKS: dict = {}               # ref_number (str) -> "https://t.me/c/<internal>/<msg_id>"
+
 # === Cooldown / conversation tracking ===
 DRIVER_COOLDOWN: dict = {}                   # driver_id -> last_ticket_time
 CONVERSATION_LAST_TIME: dict = {}            # group_id -> last_conversation_time
