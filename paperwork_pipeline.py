@@ -332,20 +332,28 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 analysis_failed = bool(verify_data.get("analysis_failed"))
                 bol_pages = verify_data.get("bol_pages")
                 pod_pages = verify_data.get("pod_pages")
-                # AskAI sahifalar soni teng bo'lmasa tahlilni o'tkazib yuborib, faqat
-                # umumiy `notes` qaytaradi — bu xabar faqat Page count kriteriyasiga
-                # tegishli, signature/address kriteriyalariga sizib chiqmasligi kerak.
+                # AskAI endi hujjatdagi bosilgan "X of Y" umumiy sonini (printed_total)
+                # va haqiqiy sahifa sonini (bol_pages/pod_pages — keraksiz truck/trailer
+                # rasmlar chiqarib tashlangan) qaytaradi.
+                bol_printed = verify_data.get("bol_printed_total")
+                pod_printed = verify_data.get("pod_printed_total")
+                bol_junk = verify_data.get("bol_irrelevant") or 0
+                pod_junk = verify_data.get("pod_irrelevant") or 0
+                # Page count muammosi: BOL va POD haqiqiy sahifalari teng emas, YOKI biror
+                # hujjat to'liq emas (real sahifa != bosilgan "of N"). Bu xabar faqat Page
+                # count kriteriyasiga tegishli, signature/address'ga sizib chiqmasligi kerak.
+                bol_incomplete = isinstance(bol_printed, int) and bol_pages is not None and bol_pages != bol_printed
+                pod_incomplete = isinstance(pod_printed, int) and pod_pages is not None and pod_pages != pod_printed
                 page_mismatch = (
                     not analysis_failed
                     and bol_pages is not None and pod_pages is not None
-                    and bol_pages != pod_pages
+                    and (bol_pages != pod_pages or bol_incomplete or pod_incomplete)
                 )
 
                 if page_mismatch:
-                    # Page count teng emas — signature/address tahlili o'tkazib
-                    # yuborilgan. Bu kriteriyalarni xatosiz (neytral) qoldiramiz,
-                    # muammo faqat Page count bo'limida ko'rinsin (boshqa joyga
-                    # sizib chiqmasin).
+                    # Page count muammosi bor — signature/address tahlilini neytral
+                    # qoldiramiz, muammo faqat Page count bo'limida ko'rinsin (boshqa
+                    # joyga sizib chiqmasin).
                     address_match = True
                     pod_valid = True
                     address_notes = "—"
@@ -367,12 +375,15 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                     "deliveryAddressAddress": {"isHealthy": address_match, "summary": address_notes if address_notes else ("Match" if address_match else "Mismatch")},
                 }
                 if bol_pages is not None and pod_pages is not None:
+                    bol_s = f"BOL {bol_pages}" + (f" of {bol_printed}" if isinstance(bol_printed, int) else "") + " pg"
+                    pod_s = f"POD {pod_pages}" + (f" of {pod_printed}" if isinstance(pod_printed, int) else "") + " pg"
+                    total_junk = bol_junk + pod_junk
+                    summary = f"{bol_s}, {pod_s}" + (" — must match." if page_mismatch else "")
+                    if total_junk:
+                        summary += f" ({total_junk} irrelevant image(s) removed)"
                     pod_paperwork_data["pageCount"] = {
                         "isHealthy": not page_mismatch,
-                        "summary": (
-                            f"BOL has {bol_pages} page(s), POD has {pod_pages} page(s). They must be equal."
-                            if page_mismatch else str(pod_pages)
-                        ),
+                        "summary": summary,
                     }
 
                 # Costco / Walmart / Target ga yetkazib berishda broker POD bilan birga

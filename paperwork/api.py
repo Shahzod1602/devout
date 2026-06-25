@@ -122,6 +122,20 @@ async def check_bol_endpoint(
             "deliveryAddressAddress": result.get("deliveryAddressAddress", {"isHealthy": False, "summary": "Not checked"}),
         }
 
+        # Page count kriteriyasi — hujjatdagi bosilgan "X of Y" bilan haqiqiy sahifa
+        # sonini solishtiradi. Keraksiz (truck/trailer/bo'sh) rasmlar realPages'ga
+        # kirmaydi; summary'da nechta tashlangani ko'rsatiladi.
+        _pc = result.get("pageCount") or {}
+        _real = _pc.get("realPages")
+        _printed = _pc.get("printedTotal")
+        _junk = _pc.get("irrelevantPages") or 0
+        if isinstance(_real, int) and _real > 0:
+            _incomplete = isinstance(_printed, int) and _real != _printed
+            _summary = f"{_real} of {_printed} page(s)" if isinstance(_printed, int) else f"{_real} page(s)"
+            if _junk:
+                _summary += f" ({_junk} irrelevant removed)"
+            paperwork_data["pageCount"] = {"isHealthy": not _incomplete, "summary": _summary}
+
         # US Mail / Federal load uchun qo'shimcha tahlil
         us_mail = False
         us_mail_result = None

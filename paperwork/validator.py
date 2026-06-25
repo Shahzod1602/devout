@@ -125,6 +125,16 @@ STEP 3 — Validate matched load fields:
 4. PICKUP ADDRESS: Does document's origin/shipper match the matched load's pickup?
 5. DELIVERY ADDRESS: Does document's destination/consignee match the matched load's delivery?
 
+STEP 4 — Page count & relevance (the upload may contain several images):
+  - Some images are NOT document pages: truck/trailer photos, the cab, a license plate,
+    an odometer, random snapshots, or fully blank pages. These must NOT be counted as pages.
+  - "printedTotal": read the document's PRINTED page indicator such as "Page 1 of 4",
+    "1 of 4", "Page 1/4", "Sheet 1 of 3" and return the TOTAL N as an integer.
+    If the document shows no such printed indicator, return null.
+  - "realPages": how many of the provided images are GENUINE pages of THIS document.
+  - "irrelevantPages": how many provided images are NOT part of the document
+    (truck/trailer photos, blank pages, unrelated snapshots).
+
 Return ONLY valid JSON — no markdown, no code fences, no extra text:
 {{
     "isBOL": true or false,
@@ -134,7 +144,8 @@ Return ONLY valid JSON — no markdown, no code fences, no extra text:
     "signature": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "poNumber": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "pickUpAddress": {{"isHealthy": true or false, "summary": "brief explanation"}},
-    "deliveryAddressAddress": {{"isHealthy": true or false, "summary": "brief explanation"}}
+    "deliveryAddressAddress": {{"isHealthy": true or false, "summary": "brief explanation"}},
+    "pageCount": {{"printedTotal": null, "realPages": 1, "irrelevantPages": 0}}
 }}"""
 
     # Her bir call uchun alohida PIL image ochiladi (shared stream muammosini oldini olish)
