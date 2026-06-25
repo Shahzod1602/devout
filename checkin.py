@@ -18,6 +18,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 import aiohttp
 from aiogram import types
@@ -314,18 +315,13 @@ Rules:
 
 If this is NOT a check-in/check-out or pickup/delivery confirmation message, return: null"""
 
-        messages = [
-            {"role": "system", "content": "You are a logistics data extractor. Return only valid JSON or null."},
-            {"role": "user", "content": prompt},
-        ]
         # Provider fallback: Groq (asosiy) -> Cerebras (Groq ishlamay qolsa).
         # Cerebras'da gpt-oss reasoning modeli — ko'proq token + reasoning_effort=low kerak.
-        providers = [("Groq", groq_client, "llama-3.3-70b-versatile", {"max_tokens": 150})]
+        groq_extra: dict[str, Any] = {"max_tokens": 150}
+        providers = [("Groq", groq_client, "llama-3.3-70b-versatile", groq_extra)]
         if cerebras_client is not None:
-            providers.append((
-                "Cerebras", cerebras_client, "gpt-oss-120b",
-                {"max_tokens": 400, "extra_body": {"reasoning_effort": "low"}},
-            ))
+            cb_extra: dict[str, Any] = {"max_tokens": 400, "extra_body": {"reasoning_effort": "low"}}
+            providers.append(("Cerebras", cerebras_client, "gpt-oss-120b", cb_extra))
 
         content = None
         used = None
@@ -336,7 +332,10 @@ If this is NOT a check-in/check-out or pickup/delivery confirmation message, ret
                 try:
                     res = llm.chat.completions.create(
                         model=model,
-                        messages=messages,
+                        messages=[
+                            {"role": "system", "content": "You are a logistics data extractor. Return only valid JSON or null."},
+                            {"role": "user", "content": prompt},
+                        ],
                         temperature=0.1,
                         **extra,
                     )

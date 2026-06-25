@@ -80,7 +80,7 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
                 lambda: get_genai_client().models.generate_content(
                     model=GEMINI_BOT_MODEL,
                     # genai-sdk `contents` expects invariant list; mixed str+Part is OK at runtime
-                    contents=[text_prompt, *image_parts],  # type: ignore[arg-type]
+                    contents=[text_prompt, *image_parts],
                     config=genai_types.GenerateContentConfig(max_output_tokens=10000),
                 ),
             )
