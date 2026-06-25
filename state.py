@@ -14,7 +14,7 @@ Qoidalar:
 import asyncio
 
 from aiogram import Bot, Dispatcher
-from config import BOT_TOKEN, ERROR_BOT_TOKEN, GROQ_API_KEY, OPENAI_API_KEY
+from config import BOT_TOKEN, CEREBRAS_API_KEY, ERROR_BOT_TOKEN, GROQ_API_KEY, OPENAI_API_KEY
 from openai import OpenAI
 
 # === Telegram singleton clients ===
@@ -25,6 +25,11 @@ error_bot: Bot = Bot(token=ERROR_BOT_TOKEN)
 # === LLM clients ===
 openai_client: OpenAI = OpenAI(api_key=OPENAI_API_KEY)
 groq_client: OpenAI = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+# Cerebras — Groq ishlamay qolsa fallback (checkin.py ishlatadi). Key bo'lmasa None.
+cerebras_client: OpenAI | None = (
+    OpenAI(api_key=CEREBRAS_API_KEY, base_url="https://api.cerebras.ai/v1")
+    if CEREBRAS_API_KEY else None
+)
 
 # Backward-compat alias — bot.py historically exposed `client` for OpenAI.
 client: OpenAI = openai_client

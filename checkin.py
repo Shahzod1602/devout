@@ -13,6 +13,7 @@ Public funksiyalar:
 - parse_time_to_iso, extract_timezone, is_valid_load_id (utilities)
 - extract_doc_numbers_from_text, build_checkin_checkout_text (reply enrichment)
 """
+import asyncio
 import json
 import logging
 import re
@@ -30,7 +31,7 @@ from db import get_company_permissions, get_load_from_cache
 from external import get_api_token, get_loads_from_api, invalidate_token
 from groups import get_or_fetch_company_id
 from messaging import send_error_to_group
-from state import groq_client
+from state import cerebras_client, groq_client
 
 logger = logging.getLogger(__name__)
 
@@ -313,16 +314,55 @@ Rules:
 
 If this is NOT a check-in/check-out or pickup/delivery confirmation message, return: null"""
 
-        res = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a logistics data extractor. Return only valid JSON or null."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=150,
-            temperature=0.1,
-        )
-        content = (res.choices[0].message.content or "").strip()
+        messages = [
+            {"role": "system", "content": "You are a logistics data extractor. Return only valid JSON or null."},
+            {"role": "user", "content": prompt},
+        ]
+        # Provider fallback: Groq (asosiy) -> Cerebras (Groq ishlamay qolsa).
+        # Cerebras'da gpt-oss reasoning modeli — ko'proq token + reasoning_effort=low kerak.
+        providers = [("Groq", groq_client, "llama-3.3-70b-versatile", {"max_tokens": 150})]
+        if cerebras_client is not None:
+            providers.append((
+                "Cerebras", cerebras_client, "gpt-oss-120b",
+                {"max_tokens": 400, "extra_body": {"reasoning_effort": "low"}},
+            ))
+
+        content = None
+        used = None
+        last_err = None
+        for name, llm, model, extra in providers:
+            # 429 (rate-limit) bo'lsa o'sha provayderni qisqa kutib qayta urinamiz.
+            for attempt in range(3):
+                try:
+                    res = llm.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.1,
+                        **extra,
+                    )
+                    content = (res.choices[0].message.content or "").strip()
+                    used = name
+                    break
+                except Exception as e:
+                    last_err = e
+                    if getattr(e, "status_code", None) == 429 and attempt < 2:
+                        resp = getattr(e, "response", None)
+                        ra = resp.headers.get("retry-after") if resp is not None else None
+                        try:
+                            delay = min(float(ra), 12.0) if ra else 2.0 * (attempt + 1)
+                        except (TypeError, ValueError):
+                            delay = 2.0 * (attempt + 1)
+                        logger.warning("⚠️ %s rate-limit (429) — %.1fs kutib qayta urinilyapti", name, delay)
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.warning("⚠️ %s checkin parse xato, keyingi provayderga o'tilyapti: %s", name, e)
+                    break
+            if content is not None:
+                break
+
+        if content is None:
+            await send_error_to_group(f"❌ Checkin/checkout LLM parse xato (barcha provayder): {last_err}")
+            return None
         if content.lower() == "null" or not content:
             return None
         content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content, flags=re.MULTILINE).strip()
@@ -333,10 +373,10 @@ If this is NOT a check-in/check-out or pickup/delivery confirmation message, ret
             return None
         if data["doc_type"] not in ("BOL", "POD"):
             return None
-        logger.info("🤖 Groq parsed checkin/checkout: %s", data)
+        logger.info("🤖 %s parsed checkin/checkout: %s", used, data)
         return data
     except Exception as e:
-        await send_error_to_group(f"❌ Groq checkin/checkout parse error: {e}")
+        await send_error_to_group(f"❌ Checkin/checkout parse error: {e}")
         return None
 
 

@@ -39,6 +39,9 @@ ssl_context = ssl.create_default_context(cafile=certifi.where())
 BOT_TOKEN = _require_env("BOT_TOKEN")
 OPENAI_API_KEY = _require_env("OPENAI_API_KEY")
 GROQ_API_KEY = _require_env("GROQ_API_KEY")
+# Cerebras — Groq ishlamay qolsa (masalan org billing bloki) fallback. Ixtiyoriy:
+# berilmasa fallback o'chadi, faqat Groq ishlatiladi.
+CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
 
 # === Vertex AI (Gemini) ===
 # Paperwork tahlili Vertex AI orqali ishlaydi (service account auth), eski
