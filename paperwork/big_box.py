@@ -11,6 +11,7 @@ aniqlanadi (`is_big_box_delivery`), keyin POD rasmlari Gemini bilan tahlil qilin
 har bir hujjat uchun {isHealthy, summary} qaytariladi (`analyze_big_box_pod_gemini`).
 """
 import logging
+import re
 from io import BytesIO
 
 from PIL import Image
@@ -21,11 +22,15 @@ from .gemini import gemini_extract_once
 logger = logging.getLogger(__name__)
 
 # Har bir retailer uchun keyword variantlari → ko'rsatiladigan nom.
+# Sam's Club — Walmart'ning ombor bo'limi, aynan o'sha TCR/receiving oqimiga ega.
 BIG_BOX_RETAILERS = (
     (("costco",), "Costco"),
-    (("walmart", "wal-mart", "wal mart"), "Walmart"),
+    (("walmart", "wal-mart", "wal mart", "sam's club", "sams club", "sam s club"), "Walmart"),
     (("target",), "Target"),
 )
+# "target" noaniq (ko'chada "Target Drive" bo'lishi mumkin) — faqat nom maydonida,
+# butun-so'z sifatida tekshiriladi. Qolgan kalitlar distinktiv → substring yetarli.
+_WORD_BOUNDARY_KEYWORDS = {"target"}
 
 
 def is_big_box_delivery(stops: list) -> tuple[bool, str]:
@@ -38,15 +43,25 @@ def is_big_box_delivery(stops: list) -> tuple[bool, str]:
         if (stop.get("type") or "").lower() != "delivery":
             continue
         addr = stop.get("address") or {}
+        # To'liq blob (ko'cha bilan) — distinktiv kalitlar uchun.
         combined = " ".join([
             str(addr.get("address_line_1") or ""),
             str(addr.get("address_line_2") or ""),
             str(addr.get("locationName") or ""),
             str(stop.get("locationName") or ""),
         ]).lower()
+        # Faqat do'kon nomi maydonlari — "target" kabi noaniq kalitlar uchun.
+        name_only = " ".join([
+            str(addr.get("locationName") or ""),
+            str(stop.get("locationName") or ""),
+        ]).lower()
         for keywords, name in BIG_BOX_RETAILERS:
-            if any(kw in combined for kw in keywords):
-                return True, name
+            for kw in keywords:
+                if kw in _WORD_BOUNDARY_KEYWORDS:
+                    if re.search(rf"\b{re.escape(kw)}\b", name_only):
+                        return True, name
+                elif kw in combined:
+                    return True, name
     return False, ""
 
 
@@ -125,6 +140,7 @@ briefly say what is missing.
                     result["deliveryReport"]["isHealthy"],
                     result["sticker"]["isHealthy"])
         return result
-    except Exception as e:
+    except Exception:
+        # Raw xatoni kartaga sizdirmaymiz — "topilmadi"dan farqli "tahlil bo'lmadi" holati.
         logger.exception("⚠️ analyze_big_box_pod_gemini failed")
-        return _fallback_result(f"Validation error: {str(e)}")
+        return _fallback_result("Could not analyze — please Resend")

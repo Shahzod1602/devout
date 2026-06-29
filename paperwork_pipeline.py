@@ -23,7 +23,6 @@ from db import (
     get_bols_count,
     get_delivery_count,
     get_last_bol,
-    get_load_from_cache,
     get_pickup_count,
     get_pods_count,
     init_load_in_cache,
@@ -257,9 +256,10 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 logger.info("✅ BOL already in DB → keeping file_type=2 (POD)")
 
         pickup_count, delivery_count = count_stops_by_type({"stops": stops})
-        load_data = await get_load_from_cache(chat_id, new_load_id)
-        if not load_data:
-            await init_load_in_cache(chat_id, new_load_id, pickup_count, delivery_count)
+        # Har yuklashda jonli pickup/delivery sonini yangilaymiz — reconsignment/qo'shilgan
+        # stop bo'lsa eski #N/M qotib qolmasin. init_load_in_cache endi ON CONFLICT DO UPDATE
+        # bilan faqat count ustunlarini yangilaydi (bols/pods qatorlariga tegmaydi).
+        await init_load_in_cache(chat_id, new_load_id, pickup_count, delivery_count)
 
         if file_type == -1:
             await checking_msg.delete()
@@ -390,8 +390,17 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 # Trailer Control Record, Delivery Report va Sticker hujjatlarini talab
                 # qiladi. Delivery stop shu retailerlardan biri bo'lsa — POD yuklamasini
                 # Gemini bilan tahlil qilib, 3 kategoriyani paperwork issue'ga qo'shamiz.
+                deliveries = [s for s in stops if (s.get("type") or "").lower() == "delivery"]
                 is_big_box, retailer = is_big_box_delivery(stops)
-                if is_big_box:
+                # BB-2: aralash multi-delivery (masalan Costco + oddiy do'kon) yukda big-box
+                # qo'shimcha hujjatlarini TALAB qilmaymiz — aks holda oddiy do'kon POD'ida
+                # 3 ta hujjat "topilmadi" deb soxta qizil chiqadi. Faqat (a) bitta delivery
+                # va u big-box, YOKI (b) hamma delivery bir xil big-box retailer bo'lsa ishlaymiz.
+                big_box_uniform = bool(
+                    is_big_box and deliveries
+                    and all(is_big_box_delivery([s])[1] == retailer for s in deliveries)
+                )
+                if is_big_box and big_box_uniform:
                     logger.info("📦 Load #%s delivery → %s, qo'shimcha hujjatlar tekshirilmoqda...",
                                 load_display_id, retailer)
                     try:
@@ -403,6 +412,9 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                     except Exception as e:
                         logger.exception("⚠️ Big-box POD tahlili xatosi (Load #%s)", load_display_id)
                         await send_error_to_group(f"⚠️ {retailer} qo'shimcha hujjat tahlili xatosi: {e}", group_id=chat_id)
+                elif is_big_box:
+                    logger.info("📦 Load #%s — aralash multi-delivery, big-box qo'shimcha hujjat "
+                                "tekshiruvi o'tkazib yuborildi", load_display_id)
 
                 pod_post_result = await post_paperwork_issue(
                     pod_paperwork_data, file_bytes_value, file_name or "pod_document",

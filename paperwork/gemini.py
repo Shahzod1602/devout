@@ -81,7 +81,11 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
                     model=GEMINI_BOT_MODEL,
                     # genai-sdk `contents` expects invariant list; mixed str+Part is OK at runtime
                     contents=[text_prompt, *image_parts],
-                    config=genai_types.GenerateContentConfig(max_output_tokens=10000),
+                    # temperature=0.2: BOL self-consistency avval Vertex default (~1.0) da
+                    # ishlardi — shu sabab r1/r2 tez-tez kelishmay 3-chi tiebreaker yonardi.
+                    # Past harorat kelishmovchilikni kamaytiradi (kamroq pullik 3-chi call,
+                    # barqarorroq health/match maydonlari), lekin biroz diversity qoladi.
+                    config=genai_types.GenerateContentConfig(max_output_tokens=10000, temperature=0.2),
                 ),
             )
             latency_ms = int((time.time() - call_start) * 1000)
@@ -120,6 +124,9 @@ async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: i
     for retry in range(3):
         response = await _generate_with_backoff(text_prompt, image_parts)
         result = (response.text or "").strip()
+        if not result:
+            logger.warning("⚠️ Gemini bo'sh javob qaytardi (attempt %d, retry %d) — "
+                           "truncation/safety-block bo'lishi mumkin", attempt_num, retry + 1)
         logger.debug("🤖 Gemini attempt %d raw response: %s", attempt_num, result[:500])
         try:
             return parse_gemini_json(result)

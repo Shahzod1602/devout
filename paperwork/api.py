@@ -157,7 +157,7 @@ async def check_bol_endpoint(
             # State-only address — pickup/delivery sifatida ham US Mail uchun qaytaramiz
             paperwork_data["pickUpAddress"] = state_addr
             paperwork_data["deliveryAddressAddress"] = state_addr
-            paperwork_data["isLateSlip"] = bool(us_mail_result.get("isLateSlip"))
+            # isLateSlip pastda `final_late_slip` orqali bir marta yoziladi (dead write olib tashlandi).
             paperwork_data["lateSlipAllowed"] = bool(us_mail_result.get("lateSlipAllowed"))
             paperwork_data["isTeamDriverLoad"] = bool(us_mail_result.get("isTeamDriverLoad"))
 

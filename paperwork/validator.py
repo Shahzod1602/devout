@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+from collections import Counter
 from io import BytesIO
 
 from PIL import Image
@@ -10,6 +11,42 @@ from stats import current_gemini_endpoint
 from .gemini import gemini_extract_once
 
 logger = logging.getLogger(__name__)
+
+
+def _vote_field(samples: list[dict], key: str, default):
+    """Eng ko'p uchragan qiymat (>=2 marta) — aks holda konservativ `default`."""
+    value, n = Counter(s.get(key) for s in samples).most_common(1)[0]
+    return value if n >= 2 else default
+
+
+def _majority_vote(samples: list[dict]) -> dict:
+    """3 self-consistency natijasidan isBOL/isLateSlip/matchedIndex bo'yicha ovoz beradi.
+
+    Avval `return r3` qilinardi — bitta yuqori-varianslı 3-chi sample 2-of-3
+    konsensusni ag'darib yuborardi. Endi har bir maydon bo'yicha ko'pchilik
+    olinadi (matchedIndex 3 xil chiqsa → konservativ 0 = moslik yo'q). G'olib
+    tuple'ga eng mos sample'ning health maydonlari ishlatiladi.
+    """
+    voted_bol = _vote_field(samples, "isBOL", default=False)
+    voted_late = _vote_field(samples, "isLateSlip", default=False)
+    voted_index = _vote_field(samples, "matchedIndex", default=0)
+    logger.info("🗳️ Majority vote → isBOL=%s, isLateSlip=%s, matchedIndex=%s",
+                voted_bol, voted_late, voted_index)
+
+    def _score(s: dict) -> int:
+        return (int(s.get("isBOL") == voted_bol)
+                + int(s.get("isLateSlip") == voted_late)
+                + int(s.get("matchedIndex") == voted_index))
+
+    best = samples[0]
+    for s in samples[1:]:
+        if _score(s) > _score(best):
+            best = s
+    winner = dict(best)
+    winner["isBOL"] = voted_bol
+    winner["isLateSlip"] = voted_late
+    winner["matchedIndex"] = voted_index
+    return winner
 
 
 def format_ratecon_address(stop: dict) -> str:
@@ -91,8 +128,12 @@ STEP 1 — Determine document type:
 Set "isBOL" true/false AND "isLateSlip" true/false (a document is at most one of these; usually both false means it's neither).
 
 ACCEPT as BOL (isBOL=true):
-  - "Bill of Lading", "BOL", "Straight Bill of Lading"
+  - "Bill of Lading", "BOL", "Straight Bill of Lading", "Master/House BOL", "VICS BOL"
   - "Contract Route Vehicle Record", "PS Form 5398-A", "USPS Contract Route Vehicle Record"
+  - A title in ANY language for the same document (e.g. Spanish "Conocimiento de Embarque",
+    "Carta de Porte", French "Connaissement") still counts if it is a signed-at-origin pickup doc
+  - A signed shipping/load manifest or packing list that references a load/PO/route and is
+    signed by the shipper or driver at pickup
   - Any pickup document signed by SHIPPER or DRIVER at origin
 
 ACCEPT as Late Slip (isLateSlip=true, isBOL=false):
@@ -109,21 +150,35 @@ REJECT as NOT BOL (isBOL=false AND isLateSlip=false):
 
 STEP 2 — Find matching load (set "matchedIndex" to 1-based index, or 0 if no match):
 Match signals ranked by strength:
-  1. LOAD/BOL NUMBER (strongest): Does the document's BOL#, PO#, Pro#, Trip#, Route#, or reference number match any load's "loadNumber"?
+  1. LOAD/BOL NUMBER (strongest): Does the document's BOL#, PO#, Pro#, Trip#, Route#, or reference number equal any load's "loadNumber"?
   2. PICKUP CITY/STATE: Does the shipper/origin/dispatch facility match a load's pickup address?
   3. DELIVERY CITY/STATE: Does the consignee/destination match a load's delivery address?
   4. WEIGHT: Use as secondary confirmation only
-USPS zone codes: 98Z=Seattle WA, 9EZ=Federal Way WA, DEN=Denver CO, 07Z=New Jersey NJ, P&DC=Processing Center, NDC=Network Distribution Center
-Same city or metro area counts as a match even if street address differs.
-If a load's loadNumber appears anywhere on the document — that is a strong match.
-Set matchedIndex=0 only if NO load matches on ANY signal.
+USPS facilities use 3-char NASS codes (e.g. 98Z, 9EZ, DEN, 07Z) plus names like P&DC / NDC /
+Processing Center / Network Distribution Center — match by facility code OR city/state OR route/trip number.
+Same city or metro area counts as a match even if the street address differs.
 
-STEP 3 — Validate matched load fields:
-1. WEIGHT: Is weight present and readable? Compare with load weight if available.
-2. SIGNATURE: Is there a handwritten driver/shipper signature visible?
-3. PO NUMBER: Is there a BOL#/PO#/Pro#/Trip#/Route# present on the document?
-4. PICKUP ADDRESS: Does document's origin/shipper match the matched load's pickup?
-5. DELIVERY ADDRESS: Does document's destination/consignee match the matched load's delivery?
+MATCH RULE (be strict — a wrong match is worse than no match):
+  Set matchedIndex > 0 ONLY when EITHER
+    (a) a BOL#/PO#/Pro#/Trip#/Route# on the document equals a load's loadNumber, OR
+    (b) BOTH the pickup city/state AND the delivery city/state match the SAME load.
+  A single city match alone is NOT sufficient — return 0.
+  If two or more loads match by lane (same pickup+delivery area), you MUST use the reference
+  number to disambiguate; if none disambiguates, return matchedIndex=0.
+Also set "matchType" to "number" (matched via a reference number), "lane" (matched via both
+cities only) or "none" (matchedIndex=0).
+
+STEP 3 — Validate matched load fields (each isHealthy is true ONLY per the rule below):
+1. WEIGHT: isHealthy=true if a numeric weight is present and readable on the document. If the
+   matched load also provides a weight, note any large discrepancy in "summary" but do NOT set
+   isHealthy=false on weight alone.
+2. SIGNATURE: isHealthy=true ONLY if a handwritten driver/shipper signature or an inked stamp is
+   visible. A printed/typed name alone, or an empty signature line, = false.
+3. PO NUMBER: isHealthy=true if a BOL#/PO#/Pro#/Trip#/Route# is present and readable on the document.
+4. PICKUP ADDRESS: isHealthy=true if the document's origin/shipper city AND state match the matched
+   load's pickup (street differences are allowed); false if city or state differ or are unreadable.
+5. DELIVERY ADDRESS: isHealthy=true if the document's destination/consignee city AND state match the
+   matched load's delivery (street differences allowed); false if city or state differ or are unreadable.
 
 STEP 4 — Page count & relevance (the upload may contain several images):
   - Some images are NOT document pages: truck/trailer photos, the cab, a license plate,
@@ -140,6 +195,7 @@ Return ONLY valid JSON — no markdown, no code fences, no extra text:
     "isBOL": true or false,
     "isLateSlip": true or false,
     "matchedIndex": 0,
+    "matchType": "number" or "lane" or "none",
     "weight": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "signature": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "poNumber": {{"isHealthy": true or false, "summary": "brief explanation"}},
@@ -171,6 +227,6 @@ Return ONLY valid JSON — no markdown, no code fences, no extra text:
     logger.warning("⚠️ Disagreement between attempts, running tiebreaker (attempt 3)...")
     pil_images_3 = [Image.open(BytesIO(img)) for img in bol_images]
     r3 = await gemini_extract_once(pil_images_3, prompt, 3)
-    logger.info("🔁 Tiebreaker result: isBOL=%s, matchedIndex=%s",
-                r3.get('isBOL'), r3.get('matchedIndex'))
-    return r3
+    logger.info("🔁 Tiebreaker result: isBOL=%s, isLateSlip=%s, matchedIndex=%s",
+                r3.get('isBOL'), r3.get('isLateSlip'), r3.get('matchedIndex'))
+    return _majority_vote([r1, r2, r3])

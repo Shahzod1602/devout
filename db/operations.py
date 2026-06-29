@@ -10,12 +10,19 @@ logger = logging.getLogger(__name__)
 # ====== loads ======
 
 async def init_load_in_cache(group_id, load_id, pickup_count, delivery_count):
-    """Load ni DB da yaratish (agar mavjud bo'lmasa)."""
+    """Load ni DB da yaratish; mavjud bo'lsa stop sonlarini yangilash.
+
+    Avval `DO NOTHING` edi — birinchi ko'rilgan pickup/delivery soni qotib qolardi,
+    shuning uchun reconsignment / qo'shilgan stop bo'lganda eski #N/M ko'rinardi.
+    Endi faqat count ustunlari yangilanadi; bols/pods qatorlariga TEGILMAYDI.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """INSERT INTO loads (group_id, load_id, pickup_count, delivery_count)
                VALUES (?, ?, ?, ?)
-               ON CONFLICT(group_id, load_id) DO NOTHING""",
+               ON CONFLICT(group_id, load_id) DO UPDATE SET
+                   pickup_count=excluded.pickup_count,
+                   delivery_count=excluded.delivery_count""",
             (str(group_id), str(load_id), pickup_count, delivery_count),
         )
         await db.commit()

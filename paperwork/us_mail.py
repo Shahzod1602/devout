@@ -1,5 +1,6 @@
 """US Mail / Federal load detection and specialized Gemini analyzer."""
 import logging
+import re
 from io import BytesIO
 
 from PIL import Image
@@ -10,8 +11,13 @@ from .gemini import gemini_extract_once
 logger = logging.getLogger(__name__)
 
 USMAIL_BROKER_KEYWORDS = ("usps", "us mail", "u.s. mail", "u.s.p.s", "united states postal")
-USMAIL_COMMODITY_KEYWORDS = ("usps", "us mail", "u.s. mail", "federal mail", "mail")
-USMAIL_STOP_PATTERNS = ("USPS", "P&DC", "NDC", "PROCESSING CENTER", "NETWORK DISTRIBUTION", "U.S. POSTAL")
+# Bare "mail" olib tashlandi — "mailers"/"email racks" kabilar normal yukni US-Mail deb
+# noto'g'ri belgilab, haqiqiy pickup/delivery validatsiyasini bitta state bilan almashtirardi.
+USMAIL_COMMODITY_KEYWORDS = ("usps", "us mail", "u.s. mail", "federal mail")
+# Ko'p so'zli / distinktiv patternlar — substring. Qisqa kod (NDC) butun-so'z sifatida
+# tekshiriladi (aks holda "GRANDCHESTER", "SANDCASTLE LN" kabilar mos kelib qolardi).
+USMAIL_STOP_PATTERNS_LONG = ("USPS", "P&DC", "PROCESSING CENTER", "NETWORK DISTRIBUTION", "U.S. POSTAL")
+USMAIL_STOP_TOKENS_SHORT = ("NDC",)
 
 
 def is_us_mail_load(load: dict) -> bool:
@@ -32,7 +38,10 @@ def is_us_mail_load(load: dict) -> bool:
             str(addr.get("locationName") or ""),
             str(stop.get("locationName") or ""),
         ]).upper()
-        if any(p in combined for p in USMAIL_STOP_PATTERNS):
+        if any(p in combined for p in USMAIL_STOP_PATTERNS_LONG):
+            return True
+        tokens = re.findall(r"[A-Z&.]+", combined)
+        if any(t in tokens for t in USMAIL_STOP_TOKENS_SHORT):
             return True
     return False
 

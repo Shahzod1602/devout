@@ -7,6 +7,13 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+# Hujjat tahlili sifati uchun markaziy konstantalar. AskAI (test/prod/askai.py)
+# bilan bir xil tutilishi shart — aks holda bir xil keshlangan PDF ikkala tomonda
+# har xil sahifa soni / o'qish sifatida ko'rinib, pageCount sog'lig'ini buzadi.
+MAX_PAGES = 8          # PDF dan tahlil qilinadigan sahifalar soni (avval 5 edi — askai bilan tenglashtirildi)
+RENDER_DPI = 200       # PDF sahifalarini render qilish (avval Matrix(2,2) ≈ 144 dpi edi)
+MAX_LONG_EDGE = 2600   # juda katta renderni cheklab Gemini payload/latency'ni ushlab turish
+
 
 def fix_image_orientation(img_bytes: bytes) -> bytes:
     """Rasmni to'g'ri holatga keltirish."""
@@ -34,18 +41,19 @@ def fix_image_orientation(img_bytes: bytes) -> bytes:
         return img_bytes
 
 
-def pdf_to_images(pdf_bytes: bytes) -> list:
-    """PDF ning birinchi 5 sahifasini rasmlarga aylantirish."""
+def pdf_to_images(pdf_bytes: bytes, max_pages: int = MAX_PAGES) -> list:
+    """PDF ning birinchi `max_pages` sahifasini rasmlarga aylantirish (RENDER_DPI da)."""
     images = []
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    for page_num in range(min(len(pdf_doc), 5)):
+    for page_num in range(min(len(pdf_doc), max_pages)):
         page = pdf_doc.load_page(page_num)
-        mat = fitz.Matrix(2, 2)
-        pix = page.get_pixmap(matrix=mat)
-        mode = "RGBA" if pix.alpha else "RGB"
-        pil_img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
-        if pil_img.mode != "RGB":
-            pil_img = pil_img.convert("RGB")
+        pix = page.get_pixmap(dpi=RENDER_DPI, alpha=False)
+        pil_img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        # Yuqori DPI render payload'ni shishirmasligi uchun uzun tomonni cheklaymiz.
+        long_edge = max(pil_img.size)
+        if long_edge > MAX_LONG_EDGE:
+            scale = MAX_LONG_EDGE / long_edge
+            pil_img = pil_img.resize((round(pil_img.width * scale), round(pil_img.height * scale)))
         buf = BytesIO()
         pil_img.save(buf, format="PNG")
         img_bytes = buf.getvalue()
@@ -55,8 +63,8 @@ def pdf_to_images(pdf_bytes: bytes) -> list:
     return images
 
 
-async def process_file(file_bytes: bytes, filename: str) -> list:
+async def process_file(file_bytes: bytes, filename: str, max_pages: int = MAX_PAGES) -> list:
     """Faylni rasmga aylantirish (PDF → ko'p sahifa, image → 1 ta)."""
     if filename.lower().endswith('.pdf'):
-        return pdf_to_images(file_bytes)
+        return pdf_to_images(file_bytes, max_pages=max_pages)
     return [fix_image_orientation(file_bytes)]

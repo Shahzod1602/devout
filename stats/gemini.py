@@ -13,11 +13,12 @@ router = APIRouter()
 
 # Pricing per 1M tokens (input, output) — Google narxlarini yangilab turing.
 GEMINI_PRICING_PER_1M = [
+    ("gemini-3.5-flash", 1.50, 9.00),
+    ("gemini-3-flash",   0.50, 3.00),
+    ("gemini-3-pro",     2.00, 12.00),
     ("gemini-2.5-pro",   1.25, 10.00),
     ("gemini-2.5-flash", 0.30, 2.50),
     ("gemini-2.0-flash", 0.10, 0.40),
-    ("gemini-1.5-pro",   1.25, 5.00),
-    ("gemini-1.5-flash", 0.075, 0.30),
 ]
 
 # Joriy chaqiruv kontekstidagi endpoint nomini ushlash uchun (validate-bol, us-mail-analyze, ...).
