@@ -13,6 +13,7 @@ ulardan re-export qiladi.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 
 import aiohttp
@@ -36,20 +37,41 @@ logger = logging.getLogger(__name__)
 
 # ====== Token cache file CRUD ======
 
+# RAM cache — is_internal_group() har text xabarda chaqiriladi; avval har safar
+# diskdan o'qib parse qilinardi (event loop'ni bloklaydi). Endi bir marta yuklanadi.
+_TOKEN_CACHE: dict | None = None
+
+
 def load_all_group_tokens():
-    """All guruhlar tokenlarini fayldan o'qish"""
-    if TOKEN_CACHE_FILE.exists():
-        try:
-            return json.loads(TOKEN_CACHE_FILE.read_text())
-        except (json.JSONDecodeError, OSError):
-            logger.warning("Token cache corrupt or unreadable: %s", TOKEN_CACHE_FILE, exc_info=True)
-            return {}
-    return {}
+    """All guruhlar tokenlarini o'qish (RAM cache orqali — har chaqiruvда diskka bormaydi)."""
+    global _TOKEN_CACHE
+    if _TOKEN_CACHE is None:
+        if TOKEN_CACHE_FILE.exists():
+            try:
+                _TOKEN_CACHE = json.loads(TOKEN_CACHE_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                logger.warning("Token cache corrupt or unreadable: %s", TOKEN_CACHE_FILE, exc_info=True)
+                _TOKEN_CACHE = {}
+        else:
+            _TOKEN_CACHE = {}
+    return _TOKEN_CACHE
 
 
 def save_all_group_tokens(data):
-    """All guruhlar tokenlarini faylga saqlash"""
-    TOKEN_CACHE_FILE.write_text(json.dumps(data, indent=2))
+    """All guruhlar tokenlarini ATOMIK saqlash (temp+rename) + RAM cache'ni yangilash.
+
+    Avval write_text() to'g'ridan-to'g'ri yozardi — yozish o'rtasida crash/ENOSPC bo'lsa
+    fayl buzilib, keyingi load {} qaytarib BARCHA guruh ro'yxatini yo'qotardi. Endi
+    temp faylga yozib os.replace bilan atomik almashtiramiz; xato bo'lsa RAM saqlanadi.
+    """
+    global _TOKEN_CACHE
+    _TOKEN_CACHE = data
+    try:
+        tmp = TOKEN_CACHE_FILE.with_name(TOKEN_CACHE_FILE.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, TOKEN_CACHE_FILE)
+    except OSError as e:
+        logger.error("⚠️ Failed to persist group tokens (RAM cache saqlandi): %s", e)
 
 
 # ====== Started groups (/start bosilganlar) ======
@@ -309,11 +331,13 @@ async def check_group_registered(group_id, group_name):
                     return False
 
                 elif resp.status in (401, 403):
-                    await send_error_to_group("❌ API token expired, refreshing...")
+                    # Token muddati o'tgan — yangilab, chaqiruvchi QAYTA URINSIN.
+                    # Avval False qaytarardi ("ro'yxatda yo'q") + AWAITING_TOKEN=True yozardi —
+                    # bu to'g'ri ro'yxatdagi guruhga "❌ ro'yxatda emas" deb noto'g'ri javob berardi.
+                    logger.warning("⚠️ API token expired [%s], refreshing and retrying...", resp.status)
                     invalidate_token()
                     await get_api_token()
-                    AWAITING_TOKEN[group_id] = True
-                    return False
+                    return None
 
                 else:
                     logger.warning("⚠️ Unexpected response [%s]: %s", resp.status, response_text)

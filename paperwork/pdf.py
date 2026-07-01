@@ -1,4 +1,5 @@
 """PDF / image processing for paperwork analysis."""
+import asyncio
 import logging
 from io import BytesIO
 
@@ -45,26 +46,35 @@ def pdf_to_images(pdf_bytes: bytes, max_pages: int = MAX_PAGES) -> list:
     """PDF ning birinchi `max_pages` sahifasini rasmlarga aylantirish (RENDER_DPI da)."""
     images = []
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    for page_num in range(min(len(pdf_doc), max_pages)):
-        page = pdf_doc.load_page(page_num)
-        pix = page.get_pixmap(dpi=RENDER_DPI, alpha=False)
-        pil_img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-        # Yuqori DPI render payload'ni shishirmasligi uchun uzun tomonni cheklaymiz.
-        long_edge = max(pil_img.size)
-        if long_edge > MAX_LONG_EDGE:
-            scale = MAX_LONG_EDGE / long_edge
-            pil_img = pil_img.resize((round(pil_img.width * scale), round(pil_img.height * scale)))
-        buf = BytesIO()
-        pil_img.save(buf, format="PNG")
-        img_bytes = buf.getvalue()
-        img_bytes = fix_image_orientation(img_bytes)
-        images.append(img_bytes)
-    pdf_doc.close()
+    try:
+        for page_num in range(min(len(pdf_doc), max_pages)):
+            page = pdf_doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=RENDER_DPI, alpha=False)
+            pil_img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            # Yuqori DPI render payload'ni shishirmasligi uchun uzun tomonni cheklaymiz.
+            long_edge = max(pil_img.size)
+            if long_edge > MAX_LONG_EDGE:
+                scale = MAX_LONG_EDGE / long_edge
+                pil_img = pil_img.resize((round(pil_img.width * scale), round(pil_img.height * scale)))
+            buf = BytesIO()
+            pil_img.save(buf, format="PNG")
+            img_bytes = buf.getvalue()
+            img_bytes = fix_image_orientation(img_bytes)
+            images.append(img_bytes)
+    finally:
+        # close() finally'da — render xatosida ham fitz hujjati oqib ketmasin.
+        pdf_doc.close()
     return images
 
 
 async def process_file(file_bytes: bytes, filename: str, max_pages: int = MAX_PAGES) -> list:
-    """Faylni rasmga aylantirish (PDF → ko'p sahifa, image → 1 ta)."""
+    """Faylni rasmga aylantirish (PDF → ko'p sahifa, image → 1 ta).
+
+    Render (PyMuPDF/PIL) — CPU-og'ir, bloklaydigan ish. Event loop'ni (aiogram +
+    FastAPI) muzlatmaslik uchun ishchi thread'ga (run_in_executor) o'tkazamiz.
+    """
+    loop = asyncio.get_running_loop()
     if filename.lower().endswith('.pdf'):
-        return pdf_to_images(file_bytes, max_pages=max_pages)
-    return [fix_image_orientation(file_bytes)]
+        return await loop.run_in_executor(None, pdf_to_images, file_bytes, max_pages)
+    img = await loop.run_in_executor(None, fix_image_orientation, file_bytes)
+    return [img]

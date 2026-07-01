@@ -154,6 +154,14 @@ async def send_message_to_history_api(group_id: str, writer_name: str, message: 
                     elif resp.status == 404:
                         logger.warning("⚠️ [HISTORY API] Not found [404] | group=%s | writer=%s | Dropping message", group_id, writer_name)
                         return False
+                    elif resp.status in (401, 403):
+                        # Token muddati o'tgan — yangilab, keyingi urinishда yangi token bilan.
+                        # Avval eski token bilan 2 marta retry qilib, keyin queue'ga tashlardi.
+                        logger.warning("⚠️ [HISTORY API] Auth [%s] | group=%s | attempt=%d/3 | refreshing token",
+                                       resp.status, group_id, attempt + 1)
+                        invalidate_token()
+                        token = await get_api_token()
+                        headers["Authorization"] = f"Bearer {token}"
                     else:
                         resp_text = await resp.text()
                         logger.warning("⚠️ [HISTORY API] Error [%s] | group=%s | attempt=%d/3 | response=%s",
@@ -202,6 +210,11 @@ async def retry_failed_messages():
                             logger.info("✅ Retry successful for group %s", payload['groupId'])
                         elif resp.status == 404:
                             logger.warning("⚠️ Retry failed [404] for group %s. Dropping message.", payload['groupId'])
+                        elif resp.status in (401, 403):
+                            # Token muddati o'tgan — invalidate qilamiz (keyingi tsikl yangi token oladi) + re-queue.
+                            logger.warning("⚠️ Retry auth [%s] for group %s — refreshing token, re-queuing.", resp.status, payload['groupId'])
+                            invalidate_token()
+                            FAILED_MESSAGES_QUEUE.append(payload)
                         else:
                             logger.warning("⚠️ Retry failed [%s] for group %s. Re-queuing.", resp.status, payload['groupId'])
                             FAILED_MESSAGES_QUEUE.append(payload)
