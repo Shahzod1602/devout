@@ -24,12 +24,19 @@ GEMINI_PRICING_PER_1M = [
 # Joriy chaqiruv kontekstidagi endpoint nomini ushlash uchun (validate-bol, us-mail-analyze, ...).
 current_endpoint: ContextVar = ContextVar("current_gemini_endpoint", default="-")
 
+# DBS-4: narx jadvalida yo'q model uchun ogohlantirish (har model uchun bir marta).
+_WARNED_MODELS: set = set()
+
 
 def calc_cost(model: str, in_tokens: int, out_tokens: int) -> float:
     m = (model or "").lower()
     for key, in_price, out_price in GEMINI_PRICING_PER_1M:
         if key in m:
             return (in_tokens * in_price + out_tokens * out_price) / 1_000_000
+    # Noma'lum model → $0 (jimgina emas): jadvalga qo'shish kerakligini bildiramiz.
+    if model and model not in _WARNED_MODELS:
+        _WARNED_MODELS.add(model)
+        logger.warning("calc_cost: noma'lum model '%s' — narx $0 hisoblandi (GEMINI_PRICING_PER_1M ga qo'shing)", model)
     return 0.0
 
 

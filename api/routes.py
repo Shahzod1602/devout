@@ -3,6 +3,7 @@
 State, funksiyalar va singleton client'lar o'z modullaridan (state, groups,
 tickets) module-top'da import qilinadi — hech qanday late-import bandage'lar yo'q.
 """
+import asyncio
 import logging
 from datetime import datetime
 
@@ -34,8 +35,11 @@ from state import (
     ACCEPTED_STATUS,
     AWAITING_TOKEN,
     GROUP_DRIVER_IDS,
+    GROUP_TEAM_DRIVERS,
     GROUP_TICKET_MESSAGES,
+    GROUP_TICKET_POLLING_TASKS,
     GROUP_TICKET_STATUS,
+    GROUP_TICKET_TIMERS,
     REGISTERED_GROUPS,
     message_queue,
 )
@@ -70,7 +74,13 @@ router = APIRouter()
 @router.post("/send-message", response_model=MessageResponse)
 async def send_message(data: MessageRequest):
     """Enqueue a Telegram message for the worker to deliver."""
-    await message_queue.put(data)
+    # HND-6: xabar uzunligini tekshiramiz (Telegram limiti ~4096) + navbat to'lsa 503 (backpressure).
+    if not data.message or len(data.message) > 4096:
+        raise HTTPException(status_code=422, detail="message bo'sh yoki 4096 belgidan uzun")
+    try:
+        message_queue.put_nowait(data)
+    except asyncio.QueueFull:
+        raise HTTPException(status_code=503, detail="Message queue full — try again later")
     return MessageResponse(
         success=True,
         message="Xabar navbatga qo'yildi",
@@ -160,8 +170,10 @@ async def get_ticket_status(group_id: str):
             "status": "",
             "message": "No active ticket for this group",
         }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception:
+        # HND-4: 200 + xom xato o'rniga log + umumiy xabar (bug'ni yashirmaymiz, str(e) sizmaydi).
+        logger.exception("get_ticket_status failed")
+        return {"success": False, "error": "internal error"}
 
 
 # ====== Group ⇄ company ======
@@ -321,6 +333,14 @@ async def group_deleted_webhook(group_id: str):
         pass
     AWAITING_TOKEN.pop(group_id_str, None)
     GROUP_DRIVER_IDS.pop(group_id_str, None)
+    # HND-5: ishlab turgan poll/timer task'larni bekor qilamiz + qolgan per-group holatni tozalaymiz
+    # (aks holda o'chirilgan guruh uchun polling abadiy davom etardi va RAM oqib ketardi).
+    for _tasks in (GROUP_TICKET_POLLING_TASKS, GROUP_TICKET_TIMERS):
+        _t = _tasks.pop(group_id_str, None)
+        if _t is not None and not _t.done():
+            _t.cancel()
+    for _d in (GROUP_TEAM_DRIVERS, GROUP_TICKET_STATUS, GROUP_TICKET_MESSAGES, ACCEPTED_STATUS):
+        _d.pop(group_id_str, None)
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM groups WHERE group_id=?", (group_id_str,))

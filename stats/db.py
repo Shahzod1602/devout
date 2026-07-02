@@ -1,8 +1,12 @@
 """Stats DB (bot_stats.db) — async aiosqlite connection + schema."""
 import logging
+import time
 from pathlib import Path
 
 import aiosqlite
+
+# DBS-2: retention — bundan eski stats qatorlari startup'da tozalanadi (cheksiz o'smasin).
+STATS_RETENTION_DAYS = 90
 
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -47,6 +51,13 @@ async def init_stats_db() -> None:
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
         """)
+        # DBS-2: retention — eski qatorlarni o'chirib jadvallar cheksiz o'smasligini ta'minlaymiz.
+        _cutoff = int(time.time()) - STATS_RETENTION_DAYS * 86400
+        try:
+            await db.execute("DELETE FROM paperwork_events WHERE ts < ?", (_cutoff,))
+            await db.execute("DELETE FROM gemini_calls WHERE ts < ?", (_cutoff,))
+        except Exception:
+            logger.warning("stats retention prune failed", exc_info=True)
         await db.commit()
 
 

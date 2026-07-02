@@ -123,7 +123,12 @@ async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: i
 
     for retry in range(3):
         response = await _generate_with_backoff(text_prompt, image_parts)
-        result = (response.text or "").strip()
+        # PWK-8: safety-block/bo'sh candidate holatida response.text ValueError tashlashi
+        # mumkin — guard qilamiz, aks holda self-consistency ichida kutilmagan crash.
+        try:
+            result = (response.text or "").strip()
+        except (ValueError, AttributeError):
+            result = ""
         if not result:
             logger.warning("⚠️ Gemini bo'sh javob qaytardi (attempt %d, retry %d) — "
                            "truncation/safety-block bo'lishi mumkin", attempt_num, retry + 1)

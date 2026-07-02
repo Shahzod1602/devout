@@ -1,4 +1,5 @@
 """External backend API client — login, loads, paperwork upload."""
+import asyncio
 import base64
 import json
 import logging
@@ -42,32 +43,41 @@ def invalidate_token() -> None:
     _token_expires_at = 0.0
 
 
+# EXT-7: token yangilashni bitta oqimga cheklaydigan lock (thundering-herd login'siz).
+_token_lock = asyncio.Lock()
+
+
 async def get_api_token():
     """Get a valid access token (cached, refreshed when within 5 minutes of expiry)."""
     global _access_token, _token_expires_at
     if _access_token and time.time() < _token_expires_at - 300:
         return _access_token
-    _access_token = None
-    try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
-            async with session.post(LOGIN_URL, json=LOGIN_CREDENTIALS, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.error("❌ Login failed: %s %s", resp.status, text)
-                    return None
-                # content_type=None — prod backend Content-Type yubormaydi (#botprod-migration)
-                data = await resp.json(content_type=None)
-                _access_token = data.get("accessToken")
-                if _access_token:
-                    _token_expires_at = _decode_token_exp(_access_token)
-                    if _token_expires_at == 0:
-                        # JWT exp o'qib bo'lmasa, 55 daqiqa default
-                        _token_expires_at = time.time() + 3300
-                    logger.info("✅ Token acquired! Expires at: %s", datetime.fromtimestamp(_token_expires_at))
-                return _access_token
-    except Exception:
-        logger.exception("❌ Token acquisition error")
-        return None
+    # EXT-7: bir vaqtda ko'p coroutine muddati o'tgan token ko'rsa, hammasi login qilib
+    # yubormasin — lock ostida bittasi yangilaydi, qolganlari natijani qayta ishlatadi.
+    async with _token_lock:
+        if _access_token and time.time() < _token_expires_at - 300:
+            return _access_token
+        _access_token = None
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                async with session.post(LOGIN_URL, json=LOGIN_CREDENTIALS, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error("❌ Login failed: %s %s", resp.status, text)
+                        return None
+                    # content_type=None — prod backend Content-Type yubormaydi (#botprod-migration)
+                    data = await resp.json(content_type=None)
+                    _access_token = data.get("accessToken")
+                    if _access_token:
+                        _token_expires_at = _decode_token_exp(_access_token)
+                        if _token_expires_at == 0:
+                            # JWT exp o'qib bo'lmasa, 55 daqiqa default
+                            _token_expires_at = time.time() + 3300
+                        logger.info("✅ Token acquired! Expires at: %s", datetime.fromtimestamp(_token_expires_at))
+                    return _access_token
+        except Exception:
+            logger.exception("❌ Token acquisition error")
+            return None
 
 
 async def get_loads_from_api(group_id: str) -> list:
@@ -108,14 +118,52 @@ async def get_loads_from_api(group_id: str) -> list:
     raise HTTPException(status_code=response.status_code, detail=f"API xatosi: {response.text}")
 
 
+async def get_eta_message_for_load(group_id, load_id) -> dict:
+    """Fetch the ETA-update message for a load from the backend.
+
+    Calls `GET {BASE_URL}/loads/{load_id}/eta-message` (CLA-880) which builds
+    the same ETA text the bot sends drivers, from the load's heading stop and
+    the latest ELD position. Returns `{"message": str, "reason": str | None}`.
+    `message` is empty when the ETA couldn't be built — `reason` explains why
+    (no recent ELD position, no truck assigned, etc.).
+
+    Raises HTTPException for any transport/non-2xx failure so the caller can
+    pattern-match on a single exception type (same contract as get_loads_from_api).
+    """
+    token = await get_api_token()
+    if not token:
+        raise HTTPException(status_code=401, detail="API login failed - token olib bo'lmadi")
+
+    url = f"{BASE_URL}/loads/{load_id}/eta-message"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "*/*",
+        "Accept-Language": "EN",
+        "X-Group-Id": str(group_id),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client_http:
+            response = await client_http.get(url, headers=headers)
+    except httpx.TimeoutException as e:
+        raise HTTPException(status_code=504, detail=f"Backend timeout: {e.__class__.__name__}") from e
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Backend network error: {e.__class__.__name__}: {e}") from e
+
+    if response.status_code == 200:
+        return response.json()
+    raise HTTPException(status_code=response.status_code, detail=f"API xatosi: {response.text}")
+
+
 def get_pdf_page_count(file_bytes: bytes, file_name: str) -> int:
     """PDF yoki rasm fayldan sahifa sonini olish."""
     try:
         if file_name.lower().endswith('.pdf'):
             pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
-            page_count = len(pdf_doc)
-            pdf_doc.close()
-            return page_count
+            try:
+                return len(pdf_doc)
+            finally:
+                pdf_doc.close()  # EXT-3/leak: har doim yopamiz
         return 1
     except Exception as e:
         logger.warning("⚠️ Page count olishda xato: %s", e)
@@ -144,7 +192,8 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
         headers["X-Group-Id"] = str(group_id)
 
     try:
-        page_count = get_pdf_page_count(bol_file_bytes, file_name)
+        # EXT-3: bloklaydigan PyMuPDF chaqiruvi event loop'da ishlamasin — thread'ga o'tkazamiz.
+        page_count = await asyncio.to_thread(get_pdf_page_count, bol_file_bytes, file_name)
         files = {"File": (file_name, bol_file_bytes, "application/octet-stream")}
 
         data = {
@@ -190,7 +239,8 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
 
         logger.debug("📋 Paperwork API ga yuborilayotgan data:")
         logger.debug("   URL: %s", url)
-        logger.debug("   Token: %s...", token[:50])
+        # EXT-4/SEC-3: JWT'ni log'ga tushirmaymiz — faqat uzunlik + oxirgi 4 belgi (fingerprint).
+        logger.debug("   Token: len=%d …%s", len(token), token[-4:])
         for key, value in data.items():
             logger.debug("   %s: %s", key, value)
         logger.debug("   File: %s (%d bytes)", file_name, len(bol_file_bytes))

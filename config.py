@@ -5,6 +5,7 @@ root'da `.env` bo'lishi kerak; Docker'da `--env-file` orqali uzatiladi.
 Template uchun `.env.example` ga qarang.
 """
 import json
+import logging
 import os
 import ssl
 from pathlib import Path
@@ -89,6 +90,10 @@ BOT_PORT = int(os.environ.get("BOT_PORT", "8045"))
 # === External API URLs ===
 # BASE_URL — backend domeni. Test: api.abstract-it.uz/api, prod: api.prod.abstract-it.uz/api.
 BASE_URL = os.environ.get("BASE_URL", "https://api.abstract-it.uz/api").rstrip("/")
+if "BASE_URL" not in os.environ:
+    # EXT-8: prod deploy BASE_URL ni o'rnatishni unutsa, jimgina TEST backend'ga ulanardi.
+    logging.getLogger("config").warning(
+        "⚠️ BASE_URL env o'rnatilmagan — default (TEST) backend ishlatilmoqda: %s", BASE_URL)
 LOGIN_URL = f"{BASE_URL}/auth/login"
 SWAGGER_URL = f"{BASE_URL}/tickets"
 VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token"

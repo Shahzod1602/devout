@@ -412,6 +412,8 @@ async def resolve_load_id(group_id, load_number):
     """Load number ni load ID ga aylantirish. Avval cache, keyin API."""
     load_data = await get_load_from_cache(group_id, load_number)
     if load_data:
+        # CHK-5: kesh load_id bo'yicha kalitlangan — bu yerda load_number keshda mavjud,
+        # ya'ni u backend qabul qiladigan haqiqiy load_id. (API yo'li loadNumber→id hal qiladi.)
         return str(load_number)
 
     try:
@@ -506,9 +508,14 @@ async def send_checkin_checkout(group_id, load_id, checkin, checkout, is_pickup)
                         "status": resp.status,
                         "error": parsed_error or f"{resp.status}: {text[:200]}",
                     }
+    except (TimeoutError, aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError) as e:
+        # CHK-6: faqat haqiqiy transport xatosi server_down (transient). Boshqa exception'lar
+        # (kod bug'lari) server_down deb yashirilmasin — real xato yo'lidan chiqsin.
+        await send_error_to_group(f"❌ CheckinCheckout transport error: {e}", group_id=group_id)
+        return {"success": False, "error": str(e)[:200], "server_down": True}
     except Exception as e:
         await send_error_to_group(f"❌ CheckinCheckout error: {e}", group_id=group_id)
-        return {"success": False, "error": str(e)[:200], "server_down": True}
+        return {"success": False, "error": str(e)[:200]}
 
 
 # ====== Top-level orchestrator ======
@@ -531,6 +538,10 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
     if not parsed and CHECKIN_CHECKOUT_KEYWORDS.search(text):
         parsed = await parse_checkin_checkout_llm(text)
         logger.debug("🔍 llm parse result: %s", parsed)
+        # CHK-3: LLM raqamli (int) load_id qaytarsa is_valid_load_id uni rad etib check-in'ni
+        # jimgina tashlab yubarardi — validatsiyadan oldin str'ga aylantiramiz.
+        if parsed and parsed.get("load_id") is not None:
+            parsed["load_id"] = str(parsed["load_id"]).strip()
         if parsed and not is_valid_load_id(parsed.get("load_id", "")):
             logger.debug("🔍 LLM returned invalid load_id=%r, discarding", parsed.get('load_id'))
             parsed = None

@@ -3,7 +3,10 @@
 State va funksiyalar to'g'ridan-to'g'ri o'z modullaridan import qilinadi —
 hech qanday `import bot as _b` yoki late-binding kerak emas.
 """
+import asyncio
+import html
 import logging
+import re
 
 import aiohttp
 import aiosqlite
@@ -15,7 +18,7 @@ from checkin import build_checkin_checkout_text, process_checkin_checkout_text
 from config import DB_PATH, DEFAULT_QUICK_BUTTONS
 from cooldown import check_driver_cooldown, update_conversation_time
 from db import get_company_permissions
-from external import get_api_token
+from external import get_api_token, get_eta_message_for_load, get_loads_from_api
 from groups import (
     check_group_registered_force,
     get_group_driver,
@@ -67,6 +70,15 @@ from ui import build_quickbuttons_keyboard, get_quickbuttons
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    """HND-6: fire-and-forget task'ning istisnosini yutib yubormasdan log qiladi."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Background task failed: %s", exc, exc_info=exc)
 
 
 # ====== Chat lifecycle ======
@@ -257,6 +269,7 @@ async def help_cmd(msg: types.Message):
         "  • Remove → /teamdriver remove\n"
         "/sleep — Set driver rest time (1, 2, 4, 6, 8 hours)\n"
         "/deletesleep — Delete driver's active sleep timer\n"
+        "/transit — Send Transit Update (ETA) for the current load\n"
         "/help — Show this help message\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "📄 <b>DOCUMENTS</b>\n\n"
@@ -429,12 +442,13 @@ async def sleep_callback(callback: types.CallbackQuery):
                 else:
                     text = await resp.text()
                     await send_error_to_group(f"❌ Sleep timer API error [{resp.status}]: {text}", group_id=callback.message.chat.id)
-                    await callback.message.answer("⚠️ Driver already has an active sleep timer.")
+                    # HND-7: har xatoni "already has an active timer" deb ko'rsatmaymiz — aniq xabar.
+                    await callback.message.answer("⚠️ Couldn't set the sleep timer (server error). Please try again.")
                     await callback.answer()
                     return
     except Exception as e:
         await send_error_to_group(f"❌ Sleep timer API exception: {e}", group_id=callback.message.chat.id)
-        await callback.message.answer("⚠️ Driver already has an active sleep timer.")
+        await callback.message.answer("⚠️ Couldn't set the sleep timer. Please try again.")
         await callback.answer()
         return
 
@@ -485,10 +499,108 @@ async def deletesleep_cmd(msg: types.Message):
         await msg.answer("⚠️ Failed to delete sleep timer.")
 
 
+# ====== /transit ======
+
+# Backend ETA matni current location'ni `manzil\n📍URL` ko'rinishida beradi
+# (LoadInfoMessageBuilder). Telegram'da xom URL o'rniga manzil nomining o'zini
+# bosiladigan link qilish uchun shu naqshni HTML <a> tegiga aylantiramiz.
+_LOCATION_URL_RE = re.compile(r"([^\n]+)\n📍\s*(https?://\S+)")
+
+
+def _linkify_current_location(message: str) -> str:
+    """ETA matnidagi `manzil\\n📍URL` ni manzil nomi ustidagi HTML hyperlinkka aylantiradi.
+
+    Avval butun matn HTML-escape qilinadi (& < >), so'ng manzil qatori
+    `<a href="URL">manzil</a>` ga o'raladi. "Current location: " kabi label
+    bo'lsa faqat manzil qismi linklanadi. Naqsh topilmasa matn o'zgarmaydi
+    (escape qilingan holda xavfsiz qaytadi).
+    """
+    escaped = html.escape(message, quote=False)
+
+    def _repl(m: "re.Match") -> str:
+        line, url = m.group(1), m.group(2)
+        if ": " in line:
+            label, addr = line.split(": ", 1)
+            return f'{label}: <a href="{url}">{addr}</a>'
+        return f'<a href="{url}">{line}</a>'
+
+    return _LOCATION_URL_RE.sub(_repl, escaped)
+
+
+def _pick_current_load(loads: list) -> dict | None:
+    """Guruh load'lari ichidan driver'ning hozirgi (current) load'ini tanlash.
+
+    Avval backend `isCurrent` flag'iga ishonadi (eng ishonchli signal — bu
+    truck'ning current load'i). Topilmasa InTransit status'idagi load'ga
+    qaytadi (enum int 2 yoki "InTransit" matn — serializatsiyaga bog'liq emas).
+    """
+    if not loads:
+        return None
+    for load in loads:
+        if load.get("isCurrent"):
+            return load
+    for load in loads:
+        status = load.get("status")
+        if status == 2 or str(status).lower() in ("intransit", "in_transit"):
+            return load
+    return None
+
+
+@router.message(Command("transit"))
+async def transit_cmd(msg: types.Message):
+    """Guruhning current load'i bo'yicha ETA (transit update) xabarini yuboradi.
+
+    ETA matni backend (updaterplatform) `loads/{id}/eta-message` endpointidan
+    olinadi — bu eng oxirgi ELD pozitsiyasi va load'ning heading stop'i asosida
+    quriladi.
+    """
+    await forward_message_to_history_if_todo(msg)
+
+    chat_id = msg.chat.id
+    if is_internal_group(chat_id):
+        return  # internal teams have no loads
+
+    try:
+        loads = await get_loads_from_api(str(chat_id))
+    except Exception as e:
+        await send_error_to_group(f"❌ Transit: load API exception: {e}", group_id=chat_id)
+        await msg.answer("⚠️ Could not reach the backend. Please try again later.")
+        return
+
+    load = _pick_current_load(loads)
+    if not load:
+        await msg.answer("ℹ️ No active load found for this group.")
+        return
+
+    load_id = load.get("id") or load.get("loadId")
+    try:
+        result = await get_eta_message_for_load(chat_id, load_id)
+    except Exception as e:
+        await send_error_to_group(f"❌ Transit: eta-message API exception (load {load_id}): {e}", group_id=chat_id)
+        await msg.answer("⚠️ Could not build the ETA update. Please try again later.")
+        return
+
+    message = (result or {}).get("message")
+    if message and message.strip():
+        await send_action_log(chat_id, f"Transit update sent for load {load.get('loadId') or load_id}")
+        await msg.answer(
+            _linkify_current_location(message),
+            parse_mode="HTML",
+            link_preview_options=types.LinkPreviewOptions(is_disabled=True),
+        )
+        return
+
+    reason = (result or {}).get("reason")
+    await msg.answer(f"ℹ️ ETA update unavailable: {reason}" if reason else "ℹ️ ETA update is not available right now.")
+
+
 # ====== Generic text handler (token validation, tickets, check-in/out, etc.) ======
 
 @router.message(F.text)
 async def generic_text_handler(msg: types.Message):
+    # HND-4: kanal post'lari / anonim adminlar from_user=None bilan keladi — deref'dan oldin guard.
+    if msg.from_user is None:
+        return
 
     chat_id = msg.chat.id
     chat_name = msg.chat.title or msg.from_user.full_name or "Private Chat"
@@ -610,7 +722,8 @@ async def generic_text_handler(msg: types.Message):
         logger.exception("❌ classify_message failed")
         dep = "updater"
 
-    if "basket" in text.lower():
+    # HND-5: butun-so'z — "basketball", "basket case" kabilar trigger qilmasin.
+    if re.search(r"\bbasket\b", text.lower()):
         _basket_company_id = await get_or_fetch_company_id(chat_id)
         if _basket_company_id:
             _basket_perms = await get_company_permissions(str(_basket_company_id))
@@ -854,7 +967,6 @@ async def paperwork_resend_callback(callback: types.CallbackQuery):
 @router.message(F.document | F.photo)
 async def handle_documents(msg: types.Message):
     """BOL va POD hujjatlarini qabul qilish va tekshirish (isComplete-based)."""
-    import asyncio
     import time
 
     chat_id = msg.chat.id
@@ -929,9 +1041,9 @@ async def handle_documents(msg: types.Message):
             existing_task = GROUP_IMAGE_DEBOUNCE_TASKS.get(group_key)
             if existing_task and not existing_task.done():
                 existing_task.cancel()
-            GROUP_IMAGE_DEBOUNCE_TASKS[group_key] = asyncio.create_task(
-                _send_image_prompt(chat_id, group_key, msg)
-            )
+            _debounce_task = asyncio.create_task(_send_image_prompt(chat_id, group_key, msg))
+            _debounce_task.add_done_callback(_log_task_exception)  # HND-6: xatoni yutmaymiz
+            GROUP_IMAGE_DEBOUNCE_TASKS[group_key] = _debounce_task
             return
 
         await run_bol_check(chat_id, file_bytes_value, file_name, msg)
@@ -950,7 +1062,6 @@ async def handle_documents(msg: types.Message):
 @router.message(F.voice | F.audio)
 async def handle_voice(msg: types.Message):
     """Ovozli xabar yoki audio fayldan checkin/checkout parse qilish."""
-    import asyncio
     from io import BytesIO
 
     chat_id = msg.chat.id

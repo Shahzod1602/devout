@@ -135,18 +135,15 @@ async def is_bol_accepted(group_id, load_id) -> bool:
 
 
 async def set_last_bol_accepted(group_id, load_id, accepted=True):
+    # DBS-5: atomik — SELECT id keyin UPDATE o'rniga bitta statement (read-modify-write race yo'q).
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1",
-            (str(group_id), str(load_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row:
-            await db.execute(
-                "UPDATE bols SET accepted=? WHERE id=?",
-                (1 if accepted else 0, row[0]),
-            )
-            await db.commit()
+        cur = await db.execute(
+            "UPDATE bols SET accepted=? WHERE id="
+            "(SELECT id FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1)",
+            (1 if accepted else 0, str(group_id), str(load_id)),
+        )
+        await db.commit()
+        if cur.rowcount > 0:
             logger.info("✅ Last BOL accepted=%s for group %s, load %s", accepted, group_id, load_id)
             return True
     return False
@@ -168,15 +165,15 @@ async def has_bol_for_load(group_id, load_id) -> bool:
 
 
 async def remove_last_bol_for_load(group_id, load_id):
+    # DBS-5: atomik DELETE (subquery bilan) — SELECT-keyin-DELETE race yo'q.
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1",
+        cur = await db.execute(
+            "DELETE FROM bols WHERE id="
+            "(SELECT id FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1)",
             (str(group_id), str(load_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row:
-            await db.execute("DELETE FROM bols WHERE id=?", (row[0],))
-            await db.commit()
+        )
+        await db.commit()
+        if cur.rowcount > 0:
             logger.info("🗑️ Last BOL removed for group %s, load %s", group_id, load_id)
             return True
     return False
@@ -218,15 +215,15 @@ async def has_pods_for_load(group_id, load_id) -> bool:
 
 
 async def remove_last_pod_for_load(group_id, load_id):
+    # DBS-5: atomik DELETE (subquery bilan) — SELECT-keyin-DELETE race yo'q.
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id FROM pods WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1",
+        cur = await db.execute(
+            "DELETE FROM pods WHERE id="
+            "(SELECT id FROM pods WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1)",
             (str(group_id), str(load_id)),
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row:
-            await db.execute("DELETE FROM pods WHERE id=?", (row[0],))
-            await db.commit()
+        )
+        await db.commit()
+        if cur.rowcount > 0:
             logger.info("🗑️ Last POD removed for group %s, load %s", group_id, load_id)
             return True
     return False

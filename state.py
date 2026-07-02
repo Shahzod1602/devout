@@ -12,6 +12,7 @@ Qoidalar:
   tickets, messaging, va h.k.).
 """
 import asyncio
+from collections import deque
 
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, CEREBRAS_API_KEY, ERROR_BOT_TOKEN, GROQ_API_KEY, OPENAI_API_KEY
@@ -35,7 +36,7 @@ cerebras_client: OpenAI | None = (
 client: OpenAI = openai_client
 
 # === Queues ===
-message_queue: asyncio.Queue = asyncio.Queue()
+message_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)  # HND-6: bounded — backpressure (503 on full)
 
 # === Group/driver registration state ===
 GROUP_DRIVER_IDS: dict[str, int] = {}        # group_id (str) -> primary driver_id (int)
@@ -69,5 +70,5 @@ GROUP_TICKET_MESSAGES: dict = {}             # group_id -> [{"writerName", "mess
 GROUP_TICKET_POLLING_TASKS: dict = {}        # group_id -> polling_task for backend status check
 
 # === Retry queues ===
-FAILED_MESSAGES_QUEUE: list = []             # [{"groupId", "writerName", "message"}, ...]
+FAILED_MESSAGES_QUEUE: deque = deque(maxlen=5000)  # TKT-7: outage'da cheksiz o'smasin (eng eskisi tushadi)
 HISTORY_SENT_MESSAGE_KEYS: set = set()       # {"<chat_id>:<message_id>", ...}

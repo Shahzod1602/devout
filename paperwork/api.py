@@ -7,7 +7,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from messaging import send_error_to_group
 from stats import record_paperwork_event
 
-from .pdf import process_file
+from .pdf import MAX_PAGES, process_file
 from .us_mail import analyze_us_mail_federal_gemini, is_us_mail_load
 from .validator import validate_bol_with_loads_gemini
 
@@ -125,13 +125,25 @@ async def check_bol_endpoint(
         # Page count kriteriyasi — hujjatdagi bosilgan "X of Y" bilan haqiqiy sahifa
         # sonini solishtiradi. Keraksiz (truck/trailer/bo'sh) rasmlar realPages'ga
         # kirmaydi; summary'da nechta tashlangani ko'rsatiladi.
-        _pc = result.get("pageCount") or {}
+        # PWK-3: pageCount dict emas bo'lsa (Gemini "1 of 4" string qaytarsa) guard —
+        # aks holda .get() AttributeError butun matched BOL'ni failure'ga aylantirardi.
+        _pc = result.get("pageCount")
+        if not isinstance(_pc, dict):
+            _pc = {}
         _real = _pc.get("realPages")
         _printed = _pc.get("printedTotal")
         _junk = _pc.get("irrelevantPages") or 0
         if isinstance(_real, int) and _real > 0:
-            _incomplete = isinstance(_printed, int) and _real != _printed
-            _summary = f"{_real} of {_printed} page(s)" if isinstance(_printed, int) else f"{_real} page(s)"
+            # PWK-7: hujjat MAX_PAGES'dan ko'p sahifali bo'lsa (biz cheklaganmiz) — bu
+            # "incomplete" (drayver aybi) emas, balki bizning tahlil cheklovimiz.
+            _capped = isinstance(_printed, int) and _printed > MAX_PAGES
+            _incomplete = isinstance(_printed, int) and _real != _printed and not _capped
+            if _capped:
+                _summary = f"{_real} of {_printed} page(s) — only first {MAX_PAGES} analyzed"
+            elif isinstance(_printed, int):
+                _summary = f"{_real} of {_printed} page(s)"
+            else:
+                _summary = f"{_real} page(s)"
             if _junk:
                 _summary += f" ({_junk} irrelevant removed)"
             paperwork_data["pageCount"] = {"isHealthy": not _incomplete, "summary": _summary}

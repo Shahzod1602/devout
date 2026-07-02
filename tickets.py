@@ -36,7 +36,6 @@ from state import (
     GROUP_TICKET_STATUS,
     GROUP_TICKET_TIMERS,
     HISTORY_SENT_MESSAGE_KEYS,
-    LAST_TICKETS,
     bot,
     client,
 )
@@ -104,6 +103,15 @@ async def forward_message_to_history_if_todo(msg: types.Message, fallback_text: 
         logger.debug("⏭️ [HISTORY] Duplicate message %s, skipping", message_key)
         return True
 
+    # TKT-2: dedup key'ni await'dan OLDIN qo'shamiz — yuborish paytida redelivery kelsa
+    # ikki marta POST bo'lmaydi (yuborishning o'zi retry+queue bilan himoyalangan).
+    HISTORY_SENT_MESSAGE_KEYS.add(message_key)
+    if len(HISTORY_SENT_MESSAGE_KEYS) > 10000:
+        # TKT-8: hammasini clear qilmaymiz (darrov duplikatlar toshmasin) — yarmini saqlaymiz.
+        _keep = list(HISTORY_SENT_MESSAGE_KEYS)[5000:]
+        HISTORY_SENT_MESSAGE_KEYS.clear()
+        HISTORY_SENT_MESSAGE_KEYS.update(_keep)
+
     history_text = _build_history_message_text(msg, fallback_text=fallback_text)
     writer_name = msg.from_user.full_name if msg.from_user else "unknown"
     logger.info("📤 [HISTORY] Sending to history API | group=%s | user=%s | text=%r",
@@ -117,10 +125,6 @@ async def forward_message_to_history_if_todo(msg: types.Message, fallback_text: 
         writer_name=writer_name,
         message=history_text,
     )
-
-    HISTORY_SENT_MESSAGE_KEYS.add(message_key)
-    if len(HISTORY_SENT_MESSAGE_KEYS) > 10000:
-        HISTORY_SENT_MESSAGE_KEYS.clear()
     return True
 
 
@@ -279,6 +283,12 @@ async def poll_backend_ticket_status(group_id: str, ticket_id: str | None = None
                 if poll_count % 20 == 0:
                     msg_count = len(GROUP_TICKET_MESSAGES.get(group_id_str, []))
                     logger.debug("⏳ Polling group %s: status='todo', collected %d messages", group_id, msg_count)
+        else:
+            # TKT-4: max_polls'ga 'done'siz yetdi (timeout / o'tkazib yuborilgan webhook).
+            # Guruh 'todo'da abadiy qolib history forwarding to'xtamasligi uchun reset qilamiz.
+            logger.warning("⏱️ Group %s ticket polling timed out (%d polls) — resetting status", group_id, max_polls)
+            GROUP_TICKET_STATUS.pop(group_id_str, None)
+            save_group_ticket_status(group_id, "")
 
     except asyncio.CancelledError:
         logger.warning("⚠️ Polling cancelled for group %s", group_id)
@@ -341,61 +351,7 @@ async def ticket_status_api(data: TicketStatusRequest):
         )
 
 
-# ====== AI helpers (similarity dedupe, priority) ======
-
-async def check_ticket_similarity(new_ticket_text, group_id):
-    """OpenAI orqali yangi ticket avvalgi ticketga o'xshashligini tekshirish."""
-    if group_id not in LAST_TICKETS:
-        LAST_TICKETS[group_id] = new_ticket_text
-        return False
-
-    last_ticket = LAST_TICKETS[group_id]
-
-    try:
-        prompt = f"""
-        Compare these two messages and determine if they are about the SAME ISSUE.
-        Reply with ONLY ONE WORD: "yes" or "no".
-
-        Consider them as the same issue if:
-        1. They describe the same problem or request
-        2. They have the same main topic
-        3. They are likely duplicates
-        4. The second one is just a rewording of the first
-
-        If they are different problems, reply "no".
-
-        Previous message: "{last_ticket}"
-        New message: "{new_ticket_text}"
-
-        Are they the same issue? Reply only "yes" or "no":
-        """
-
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system",
-                 "content": "Compare if two messages are about the same issue. Reply only with 'yes' or 'no'."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=5,
-            temperature=0.1,
-        )
-
-        similarity_result = (res.choices[0].message.content or "").strip().lower()
-        is_similar = similarity_result == "yes"
-
-        if is_similar:
-            logger.warning("⚠️ AI detected similar tickets. Not sending new ticket.")
-            return True
-        else:
-            LAST_TICKETS[group_id] = new_ticket_text
-            return False
-
-    except Exception as e:
-        await send_error_to_group(f"❌ AI similarity check error: {e}")
-        LAST_TICKETS[group_id] = new_ticket_text
-        return False
-
+# ====== AI helpers (priority) ======
 
 async def detect_priority(text: str):
     """OpenAI orqali xabar prioritetini aniqlash (high/medium/low)."""

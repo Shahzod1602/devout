@@ -135,6 +135,10 @@ async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status:
         caption = f"{icon} {head}{load_part}\n📝 {safe_reason}\n📦 [{ENV_LABEL}]{safe_group_label}"
         if msg_link:
             caption += f'\n🔗 <a href="{msg_link}">Open original</a>'
+        # DRIFT-4: Telegram caption limiti 1024 (HTML-escape matnni kengaytirishi mumkin).
+        # Oshib ketsa qator chegarasidan kesamiz — HTML tag/entity o'rtasidan kesilmasin.
+        if len(caption) > 1024:
+            caption = caption[:1000].rsplit("\n", 1)[0] + "\n…"
 
         await bot.send_document(
             PAPERWORK_LOG_GROUP_ID,
@@ -229,8 +233,8 @@ async def message_worker():
     """
     TELEGRAM_API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
     while True:
+        data = await message_queue.get()
         try:
-            data = await message_queue.get()
             message_text = _linkify_maps(data.message)
             # Paperwork-issue notify (Accept/Resend tugmalari bilan) — internal team /
             # driver guruhga keladigan xabarga asl hujjat xabariga "Open original" link
@@ -282,7 +286,9 @@ async def message_worker():
                     await send_error_to_group(f"❌ Error sending message: {send_result.get('description', 'Unknown error')}", group_id=data.group_id)
             except Exception as e:
                 await send_error_to_group(f"❌ Error sending message: {e}", group_id=data.group_id)
-            message_queue.task_done()
         except Exception as e:
             await send_error_to_group(f"❌ Worker error: {e}")
             await asyncio.sleep(1)
+        finally:
+            # EXT-6: task_done() har doim get()'ga mos kelsin (exception bo'lsa ham) — queue hisobi drift qilmasin.
+            message_queue.task_done()

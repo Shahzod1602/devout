@@ -150,10 +150,14 @@ class TelegramLogHandler(logging.Handler):
 
     async def _send_instant(self) -> None:
         with self._lock:
-            records = self._instant_buffer[:]
+            # EXT-5: error storm'da yuzlab xabar Telegram'ga toshib ketmasin — sikl uchun cheklaymiz.
+            records = self._instant_buffer[: self.max_batch_size]
+            dropped = len(self._instant_buffer) - len(records)
             self._instant_buffer.clear()
         for record in records:
             await self._send(self._format_record(record))
+        if dropped > 0:
+            await self._send(f"… +{dropped} more ERROR log(s) suppressed (flood protection)")
 
     async def _send_batch(self) -> None:
         with self._lock:

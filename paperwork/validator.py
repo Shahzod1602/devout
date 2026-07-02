@@ -15,7 +15,12 @@ logger = logging.getLogger(__name__)
 
 def _vote_field(samples: list[dict], key: str, default):
     """Eng ko'p uchragan qiymat (>=2 marta) — aks holda konservativ `default`."""
-    value, n = Counter(s.get(key) for s in samples).most_common(1)[0]
+    try:
+        value, n = Counter(s.get(key) for s in samples).most_common(1)[0]
+    except TypeError:
+        # PWK-6: Gemini hashlab bo'lmaydigan qiymat (masalan list) qaytarsa — Counter
+        # yiqilardi. Bunda konservativ default (moslik yo'q / False) qaytaramiz.
+        return default
     return value if n >= 2 else default
 
 
