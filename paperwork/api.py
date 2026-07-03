@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _health_field(v):
+    """BOL-1: Gemini health-field'ni dict'ga majburlaydi. Gemini `null` yoki skalyar
+    qaytarsa (mavjud-lekin-null holati), keyingi `["isHealthy"]`/`["summary"]` indekslash
+    crash qilardi va butun paperwork issue jimgina tushib qolardi. Endi konservativ
+    "tekshirilmadi" (isHealthy=False) qaytaramiz — sog'lom deb belgilamaymiz."""
+    return v if isinstance(v, dict) else {"isHealthy": False, "summary": "Not checked"}
+
+
 @router.post("/check-bol")
 async def check_bol_endpoint(
     group_id: str = Form(..., description="Telegram group ID (masalan: -5043574387)"),
@@ -50,27 +58,42 @@ async def check_bol_endpoint(
         other_loads = [ld for ld in loads if ld.get("isCurrent") is not True]
         logger.info("✅ %d current + %d other load (%d total)", len(current_loads), len(other_loads), len(loads))
 
-        # 3. BOL/Late Slip ni avval current, keyin (kerak bo'lsa) boshqa loadlar bilan solishtirish
+        # 3. BOL/Late Slip ni avval current, keyin (kerak bo'lsa) boshqa loadlar bilan solishtirish.
+        # BOL-2: matchType bo'yicha rank — kuchli "number" (reference raqam, rank 2) match
+        # kuchsiz "lane" (faqat shahar, rank 1) matchni yutadi. Birinchi topilganda to'xtamay
+        # eng kuchli matchni tanlaymiz; faqat kuchli number matchda erta break qilamiz.
+        # Noma'lum/yo'q matchType → rank 2 (kuchli): faqat ANIQ "lane" deb belgilangan match
+        # past baholanadi, boshqa hamma holat bugungi break-on-first xulqini saqlaydi.
+        _MATCH_RANK = {"number": 2, "lane": 1}
         result: dict | None = None
         matched_load: dict | None = None
+        best_rank = 0
         for label, subset in (("current", current_loads), ("other", other_loads)):
             if not subset:
                 continue
             logger.debug("🔍 Hujjatni %s loadlar bilan Gemini orqali solishtirmoqda (%d ta)...", label, len(subset))
-            result = await validate_bol_with_loads_gemini(bol_images, subset)
-            logger.info("✅ Gemini (%s) natija: isBOL=%s, isLateSlip=%s, matchedIndex=%s",
-                        label, result.get('isBOL'), result.get('isLateSlip'), result.get('matchedIndex'))
+            res = await validate_bol_with_loads_gemini(bol_images, subset)
+            if result is None:
+                result = res  # doc-type / no-match report yo'llari uchun fallback
+            logger.info("✅ Gemini (%s) natija: isBOL=%s, isLateSlip=%s, matchedIndex=%s, matchType=%s",
+                        label, res.get('isBOL'), res.get('isLateSlip'), res.get('matchedIndex'), res.get('matchType'))
 
-            if not result.get("isBOL", False) and not result.get("isLateSlip", False):
+            if not res.get("isBOL", False) and not res.get("isLateSlip", False):
                 # Hujjat na BOL na Late Slip — boshqa subset ham foyda bermaydi
                 break
 
-            mi = result.get("matchedIndex", 0)
+            mi = res.get("matchedIndex", 0)
             if mi and 1 <= mi <= len(subset):
-                matched_load = subset[mi - 1]
-                logger.info("✅ %s loadlar orasidan moslik topildi", label)
-                break
-            logger.warning("⚠️ %s loadlar orasidan moslik topilmadi, keyingisiga o'tilmoqda...", label)
+                rank = _MATCH_RANK.get(str(res.get("matchType", "")).lower(), 2)
+                if rank > best_rank:
+                    best_rank = rank
+                    matched_load = subset[mi - 1]
+                    result = res  # health/pageCount/US-mail maydonlari mos kelgan call'dan olinsin
+                    logger.info("✅ %s loadlar orasidan moslik topildi (rank=%d)", label, rank)
+                if rank >= 2:
+                    break  # kuchli number match — boshqa subsetga hojat yo'q
+            else:
+                logger.warning("⚠️ %s loadlar orasidan moslik topilmadi, keyingisiga o'tilmoqda...", label)
 
         # `result` is guaranteed to be set by the loop above: `loads` is non-empty
         # (we returned early otherwise), so at least one subset is non-empty and
@@ -115,11 +138,11 @@ async def check_bol_endpoint(
 
         paperwork_data = {
             "loadId": load_id,
-            "weight": result.get("weight", {"isHealthy": False, "summary": "Not checked"}),
-            "signature": result.get("signature", {"isHealthy": False, "summary": "Not checked"}),
-            "poNumber": result.get("poNumber", {"isHealthy": False, "summary": "Not checked"}),
-            "pickUpAddress": result.get("pickUpAddress", {"isHealthy": False, "summary": "Not checked"}),
-            "deliveryAddressAddress": result.get("deliveryAddressAddress", {"isHealthy": False, "summary": "Not checked"}),
+            "weight": _health_field(result.get("weight")),
+            "signature": _health_field(result.get("signature")),
+            "poNumber": _health_field(result.get("poNumber")),
+            "pickUpAddress": _health_field(result.get("pickUpAddress")),
+            "deliveryAddressAddress": _health_field(result.get("deliveryAddressAddress")),
         }
 
         # Page count kriteriyasi — hujjatdagi bosilgan "X of Y" bilan haqiqiy sahifa

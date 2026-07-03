@@ -26,6 +26,7 @@ from db import (
     get_pickup_count,
     get_pods_count,
     init_load_in_cache,
+    needs_more_bols,
 )
 from external import post_paperwork_issue, verify_delivery
 from messaging import remember_paperwork_msg_link, send_error_to_group, send_paperwork_to_log_group
@@ -36,6 +37,7 @@ from paperwork import (
     is_big_box_delivery,
     process_file,
 )
+from paperwork.pdf import MAX_PAGES
 from PIL import Image
 from state import GROUP_IMAGE_TIMEOUT_TASKS, GROUP_PENDING_IMAGES, bot, client
 
@@ -245,21 +247,24 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
             file_type = 4
             logger.info("📮 Late Slip aniqlandi → file_type=4 for load #%s", load_display_id)
 
-        # Agar stops'da pickup'lar complete ko'rinsa (file_type=2) lekin BOL hali DB'da
-        # yo'q bo'lsa, bu birinchi hujjat — BOL sifatida qabul qilamiz.
-        if file_type == 2 and 'paperwork_result' in check_result:
-            existing_bol = await get_last_bol(chat_id, new_load_id)
-            if not existing_bol:
-                logger.warning("⚠️ determine_file_type=2 but no BOL in DB yet → treating as BOL (file_type=1)")
-                file_type = 1
-            else:
-                logger.info("✅ BOL already in DB → keeping file_type=2 (POD)")
-
         pickup_count, delivery_count = count_stops_by_type({"stops": stops})
         # Har yuklashda jonli pickup/delivery sonini yangilaymiz — reconsignment/qo'shilgan
         # stop bo'lsa eski #N/M qotib qolmasin. init_load_in_cache endi ON CONFLICT DO UPDATE
         # bilan faqat count ustunlarini yangilaydi (bols/pods qatorlariga tegmaydi).
+        # DEEP-1: needs_more_bols pickup_count'ni shu YANGILANGAN qatordan o'qiydi, shuning
+        # uchun count/init quyidagi override'dan OLDIN bajariladi.
         await init_load_in_cache(chat_id, new_load_id, pickup_count, delivery_count)
+
+        # Agar stops'da pickup'lar complete ko'rinsa (file_type=2) lekin hali kerakli BOLlar
+        # to'liq kelmagan bo'lsa — bu keyingi BOL, POD emas. DEEP-1: ilgari `not existing_bol`
+        # (0 ta BOL) bilan tekshirilardi → multi-pickup yukda BOL#2 xato POD sifatida ishlanardi.
+        # Endi needs_more_bols (bols_count < pickup_count) — single-pickup uchun xulq bir xil.
+        if file_type == 2 and 'paperwork_result' in check_result:
+            if await needs_more_bols(chat_id, new_load_id):
+                logger.warning("⚠️ determine_file_type=2 but more BOLs required → treating as BOL (file_type=1)")
+                file_type = 1
+            else:
+                logger.info("✅ all required BOLs on file → keeping file_type=2 (POD)")
 
         if file_type == -1:
             await checking_msg.delete()
@@ -293,7 +298,7 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
             bols_count = await get_bols_count(chat_id, new_load_id)
             required_bols = await get_pickup_count(chat_id, new_load_id)
             await checking_msg.delete()
-            await msg.answer(f"✅ Load #{load_display_id} BOL #{bols_count}/{required_bols} received!")
+            await msg.answer(f"✅ Load #{load_display_id} BOL #{min(bols_count, required_bols)}/{required_bols} received!")
 
             logger.debug("📋 check_result keys: %s", list(check_result.keys()))
             if 'paperwork_result' in check_result:
@@ -308,7 +313,7 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 else:
                     await send_error_to_group(f"❌ BOL paperwork issue xatosi: {bol_post_result.get('error')}", group_id=chat_id)
 
-            return "selected", f"BOL #{bols_count}/{required_bols} received", new_load_id
+            return "selected", f"BOL #{min(bols_count, required_bols)}/{required_bols} received", new_load_id
 
         elif file_type == 2:
             await checking_msg.delete()
@@ -319,17 +324,24 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
 
             result = await verify_delivery(bol_bytes, file_bytes_value)
             if result.get("success"):
+                verify_data = result.get("data", {})
+                # AUD2-4: askai hujjatni o'qiy olmagan bo'lsa (analysis_failed) — bu POD "qabul
+                # qilindi" degani EMAS. Cache'ga qo'shmay, count oshirmay, qayta yuborishni
+                # so'raymiz (aks holda o'qilmagan hujjat jimgina "delivered" bo'lib qolardi).
+                if bool(verify_data.get("analysis_failed")):
+                    await msg.answer(f"❌ Could not read the POD for Load #{load_display_id}. Please resend a clearer copy.")
+                    return "skipped", "POD analysis failed — resend requested", new_load_id
+
                 await add_pod_to_cache(chat_id, new_load_id, msg.message_id, file_bytes_value)
                 pods_count = await get_pods_count(chat_id, new_load_id)
                 required_pods = await get_delivery_count(chat_id, new_load_id)
 
-                verify_data = result.get("data", {})
-                address_match = verify_data.get("address_match", False)
-                pod_valid = verify_data.get("pod_valid", False)
-                address_notes = verify_data.get("address_notes", "")[:200]
-                pod_notes = verify_data.get("pod_notes", "")[:200]
+                # IC-2: `str(... or "")` — Gemini note null qaytarsa None[:200] TypeError berardi.
+                address_match = bool(verify_data.get("address_match", False))
+                pod_valid = bool(verify_data.get("pod_valid", False))
+                address_notes = str(verify_data.get("address_notes") or "")[:200]
+                pod_notes = str(verify_data.get("pod_notes") or "")[:200]
 
-                analysis_failed = bool(verify_data.get("analysis_failed"))
                 bol_pages = verify_data.get("bol_pages")
                 pod_pages = verify_data.get("pod_pages")
                 # AskAI endi hujjatdagi bosilgan "X of Y" umumiy sonini (printed_total)
@@ -339,31 +351,32 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 pod_printed = verify_data.get("pod_printed_total")
                 bol_junk = verify_data.get("bol_irrelevant") or 0
                 pod_junk = verify_data.get("pod_irrelevant") or 0
-                # Page count muammosi: BOL va POD haqiqiy sahifalari teng emas, YOKI biror
-                # hujjat to'liq emas (real sahifa != bosilgan "of N"). Bu xabar faqat Page
-                # count kriteriyasiga tegishli, signature/address'ga sizib chiqmasligi kerak.
-                bol_incomplete = isinstance(bol_printed, int) and bol_pages is not None and bol_pages != bol_printed
-                pod_incomplete = isinstance(pod_printed, int) and pod_pages is not None and pod_pages != pod_printed
+                # Page count muammosi: BOL va POD haqiqiy sahifalari teng emas, YOKI biror hujjat
+                # to'liq emas (real sahifa != bosilgan "of N"). POD-1: bosilgan total bizning
+                # MAX_PAGES cheklovimizdan katta bo'lsa — bu drayver aybi emas (biz faqat birinchi
+                # MAX_PAGES sahifani tahlil qildik), shuning uchun incomplete deb hisoblamaymiz.
+                bol_capped = isinstance(bol_printed, int) and bol_printed > MAX_PAGES
+                pod_capped = isinstance(pod_printed, int) and pod_printed > MAX_PAGES
+                bol_incomplete = isinstance(bol_printed, int) and bol_pages is not None and bol_pages != bol_printed and not bol_capped
+                pod_incomplete = isinstance(pod_printed, int) and pod_pages is not None and pod_pages != pod_printed and not pod_capped
                 page_mismatch = (
-                    not analysis_failed
-                    and bol_pages is not None and pod_pages is not None
+                    bol_pages is not None and pod_pages is not None
                     and (bol_pages != pod_pages or bol_incomplete or pod_incomplete)
                 )
 
                 if page_mismatch:
-                    # Page count muammosi bor — signature/address tahlilini neytral
-                    # qoldiramiz, muammo faqat Page count bo'limida ko'rinsin (boshqa
-                    # joyga sizib chiqmasin).
-                    address_match = True
-                    pod_valid = True
-                    address_notes = "—"
-                    pod_notes = "—"
+                    # POD-2: page count muammosida signature/address'ni YASHIL qilib YUBORMAYMIZ.
+                    # Ilgari ular majburan True (yashil "Found"/"Match") qilinardi — imzosiz yoki
+                    # noto'g'ri manzilli POD yashil ko'rinib reviewer tomonidan qabul qilinardi.
+                    # Endi "Not verified" (qizil) + sababi: avval page count'ni to'g'rilash kerak.
+                    address_match = False
+                    pod_valid = False
+                    address_notes = pod_notes = "Not verified — fix page count first"
 
-                # AskAI couldn't parse the document → show a friendly note instead of
-                # leaking a raw error (e.g. "Error: Invalid JSON response") into the card.
-                if analysis_failed or address_notes.startswith("Error:"):
+                # AskAI note "Error:" bilan boshlansa (raw xato) — do'stona note ko'rsatamiz.
+                if address_notes.startswith("Error:"):
                     address_notes = "Could not analyze — please Resend."
-                if analysis_failed or pod_notes.startswith("Error:"):
+                if pod_notes.startswith("Error:"):
                     pod_notes = "Could not analyze — please Resend."
 
                 pod_paperwork_data = {
@@ -381,6 +394,8 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                     summary = f"{bol_s}, {pod_s}" + (" — must match." if page_mismatch else "")
                     if total_junk:
                         summary += f" ({total_junk} irrelevant image(s) removed)"
+                    if bol_capped or pod_capped:
+                        summary += f" (only first {MAX_PAGES} pages analyzed)"
                     pod_paperwork_data["pageCount"] = {
                         "isHealthy": not page_mismatch,
                         "summary": summary,
@@ -425,8 +440,8 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 else:
                     await send_error_to_group(f"❌ POD paperwork issue xatosi: {pod_post_result.get('error')}", group_id=chat_id)
 
-                await msg.answer(f"✅ Load #{load_display_id} POD #{pods_count}/{required_pods} received!")
-                return "selected", f"POD #{pods_count}/{required_pods} received", new_load_id
+                await msg.answer(f"✅ Load #{load_display_id} POD #{min(pods_count, required_pods)}/{required_pods} received!")
+                return "selected", f"POD #{min(pods_count, required_pods)}/{required_pods} received", new_load_id
             else:
                 error_msg = result.get('error', 'Unknown error')
                 await send_error_to_group(f"❌ POD verification error: {error_msg}", group_id=chat_id)
