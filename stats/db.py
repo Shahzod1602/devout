@@ -3,7 +3,7 @@ import logging
 import time
 from pathlib import Path
 
-import aiosqlite
+from db.connect import db_connect
 
 # DBS-2: retention — bundan eski stats qatorlari startup'da tozalanadi (cheksiz o'smasin).
 STATS_RETENTION_DAYS = 90
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def init_stats_db() -> None:
     """Create all stats tables + WAL mode. Idempotent — safe at every startup."""
-    async with aiosqlite.connect(STATS_DB_PATH) as db:
+    async with db_connect(STATS_DB_PATH) as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS paperwork_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

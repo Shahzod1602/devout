@@ -17,7 +17,6 @@ import os
 from datetime import datetime
 
 import aiohttp
-import aiosqlite
 from config import (
     BASE_URL,
     DB_PATH,
@@ -28,6 +27,7 @@ from config import (
     ssl_context,
 )
 from db import remove_team_driver_db, save_driver_id_db, save_team_driver_id_db
+from db.connect import db_connect
 from external import get_api_token, invalidate_token
 from messaging import send_error_to_group
 from state import AWAITING_TOKEN, GROUP_DRIVER_IDS, GROUP_TEAM_DRIVERS, REGISTERED_GROUPS, STARTED_GROUPS
@@ -294,25 +294,18 @@ async def check_group_registered(group_id, group_name):
                         company_id = resp_data.get("companyId") or resp_data.get("company_id")
                         if company_id:
                             save_group_company_id(group_id, company_id)
-                        driver_id_backend = resp_data.get("driverId")
                         # `.get("driverName", "")` agar key bor lekin value=null bo'lsa,
                         # default "" ishlamaydi va None qaytadi → None.strip() crash.
                         # Backend driver olib tashlanganda aynan shu holat sodir bo'ladi.
                         driver_name_backend = (resp_data.get("driverName") or "").strip()
-                        if driver_id_backend is None:
-                            local_driver = GROUP_DRIVER_IDS.pop(group_id_str, None)
-                            if local_driver:
-                                logger.info("🗑️ Driver removed from local (driverId=null in backend) for group %s", group_id_str)
-                                async with aiosqlite.connect(DB_PATH) as db:
-                                    await db.execute(
-                                        "UPDATE groups SET driver_id=NULL, driver_name=NULL, updated_at=datetime('now') WHERE group_id=?",
-                                        (group_id_str,)
-                                    )
-                                    await db.commit()
-                        elif driver_name_backend:
+                        # CMD-1: passiv by-group sync driverni O'CHIRMAYDI. Ilgari driverId=null
+                        # bo'lsa local driver o'chirilardi — /setdriver'dan keyingi force-check uni
+                        # darhol yo'q qilardi, /start ham qayta wipe qilardi. Endi faqat backend'dan
+                        # kelgan driver NOMINI yangilaymiz (o'chirish yo'q).
+                        if driver_name_backend:
                             local_driver = GROUP_DRIVER_IDS.get(group_id_str)
                             if local_driver:
-                                async with aiosqlite.connect(DB_PATH) as db:
+                                async with db_connect(DB_PATH) as db:
                                     await db.execute(
                                         "UPDATE groups SET driver_name=?, updated_at=datetime('now') WHERE group_id=?",
                                         (driver_name_backend, group_id_str)
@@ -324,10 +317,12 @@ async def check_group_registered(group_id, group_name):
                     return True
 
                 elif resp.status == 404:
+                    # CMD-2: AWAITING_TOKEN[group_id] = True yozmaymiz — bu dict `group_id -> user_id`
+                    # (int) sifatida ishlatiladi; `True` yozish token gate'ni (handlers.py) buzib guruhni
+                    # jimgina qulflardi. STARTED_GROUPS tozalash + qayta-register xabari endi handler'da.
                     await send_error_to_group("❌ Group not found in by-group API", group_id=group_id)
                     REGISTERED_GROUPS.pop(group_id, None)
                     REGISTERED_GROUPS.pop(group_id_str, None)
-                    AWAITING_TOKEN[group_id] = True
                     return False
 
                 elif resp.status in (401, 403):
@@ -365,21 +360,33 @@ async def check_group_registered_force(group_id, group_name, force_check=False):
     return await check_group_registered(group_id, group_name)
 
 
-async def wait_for_server_and_check(group_id, group_name, msg, force_check=False) -> bool:
-    """500/502 yoki connection error bo'lsa 'Connecting...' xabar chiqarib retry qiladi."""
+async def wait_for_server_and_check(group_id, group_name, msg, force_check=False) -> "bool | None":
+    """500/502 yoki connection error bo'lsa 'Connecting...' xabar chiqarib retry qiladi.
+
+    Tri-state qaytaradi: True (ro'yxatda), False (ANIQ 404 → ro'yxatda emas),
+    None (transient — retry'lardan keyin ham noaniq). Chaqiruvchilar `if not registered:`
+    bilan ikkala falsy holatni bloklashi mumkin, LEKIN de-register kabi DESTRUKTIV
+    amallarni faqat `registered is False`da bajarishlari kerak (G1×CMD-2: transient
+    outage haqiqiy 404 sifatida talqin qilinib valid guruhni o'chirib yuborardi).
+    """
     result = await check_group_registered_force(group_id, group_name, force_check=force_check)
     if result is not None:
         return result
 
     try:
-        while True:
+        # G1: ilgari `while True:` — server o'chib qolsa cheksiz aylanib, har urinishda
+        # error-group post + token refresh spam qilardi. ~6 urinish (~25-30s) bilan cheklaymiz.
+        for _ in range(5):
             await asyncio.sleep(5)
             result = await check_group_registered_force(group_id, group_name, force_check=force_check)
             if result is not None:
                 return result
     except Exception as e:
         await send_error_to_group(f"❌ wait_for_server_and_check error: {e}", group_id=group_id)
-        return False
+        return None  # transient error — 404 emas, de-register qilinmasin
+
+    logger.warning("⏳ Server still unavailable after retries for group %s; giving up", group_id)
+    return None  # persistent outage (faqat None ko'rdik) — transient, 404 emas
 
 
 async def _post_validate_token(url, label, access_token, user_token, group_id, group_name):

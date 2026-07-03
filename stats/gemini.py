@@ -3,7 +3,7 @@ import logging
 import time
 from contextvars import ContextVar
 
-import aiosqlite
+from db.connect import db_connect
 from fastapi import APIRouter
 
 from .db import STATS_DB_PATH, range_seconds
@@ -53,7 +53,7 @@ async def record_gemini_call(
             total_tok = int(getattr(usage, "total_token_count", 0) or (in_tok + out_tok))
         cost = calc_cost(model, in_tok, out_tok)
         ep = endpoint or current_endpoint.get() or "-"
-        async with aiosqlite.connect(STATS_DB_PATH) as db:
+        async with db_connect(STATS_DB_PATH) as db:
             await db.execute(
                 "INSERT INTO gemini_calls (ts, endpoint, model, input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, success) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -69,7 +69,7 @@ async def gemini_summary(range: str = "24h"):
     win = range_seconds(range)
     since = int(time.time()) - win if win is not None else 0
 
-    async with aiosqlite.connect(STATS_DB_PATH) as db:
+    async with db_connect(STATS_DB_PATH) as db:
         async with db.execute(
             "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), "
             "COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0), COALESCE(AVG(latency_ms), 0), "
@@ -118,7 +118,7 @@ async def gemini_summary(range: str = "24h"):
 @router.get("/stats/gemini/recent", include_in_schema=False)
 async def gemini_recent(limit: int = 50):
     limit = max(1, min(int(limit or 50), 500))
-    async with aiosqlite.connect(STATS_DB_PATH) as db:
+    async with db_connect(STATS_DB_PATH) as db:
         async with db.execute(
             "SELECT id, ts, endpoint, model, input_tokens, output_tokens, total_tokens, "
             "cost_usd, latency_ms, success FROM gemini_calls ORDER BY id DESC LIMIT ?",
@@ -140,7 +140,7 @@ async def gemini_timeseries(range: str = "24h"):
     win = range_seconds(range) or 2592000
     bucket = 3600 if win <= 86400 else 86400
     since = int(time.time()) - win
-    async with aiosqlite.connect(STATS_DB_PATH) as db:
+    async with db_connect(STATS_DB_PATH) as db:
         async with db.execute(
             f"SELECT (ts / {bucket}) * {bucket} AS b, COUNT(*), "
             f"COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0) "

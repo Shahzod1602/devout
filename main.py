@@ -6,10 +6,10 @@ import asyncio
 import logging
 from datetime import datetime
 
-import aiosqlite
 import uvicorn
 from app import app
 from config import BOT_PORT, DB_PATH, ERROR_GROUP_ID
+from db.connect import db_connect
 from external import get_api_token
 from groups import load_all_group_tokens, load_started_groups
 from logging_config import attach_telegram_handler, setup_logging
@@ -87,7 +87,7 @@ async def _initialize_state():
         logger.info("♻️ Restored %d started groups", len(STARTED_GROUPS))
 
     # DB dan driver'lar
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT group_id, driver_id, driver_name, team_driver_id, team_driver_name "
             "FROM groups WHERE driver_id IS NOT NULL"

@@ -61,6 +61,7 @@ class TelegramLogHandler(logging.Handler):
         instant_level: int = logging.ERROR,
         batch_interval: float = 10.0,
         max_batch_size: int = 50,
+        max_buffer_size: int = 500,
         framework_prefixes: tuple[str, ...] = _FRAMEWORK_LOGGER_PREFIXES,
     ) -> None:
         super().__init__(level=level)  # filter at handler level
@@ -69,12 +70,16 @@ class TelegramLogHandler(logging.Handler):
         self.instant_level = instant_level
         self.batch_interval = batch_interval
         self.max_batch_size = max_batch_size
+        # MSG-LOG-1: WARNING batch buffer'ning yuqori chegarasi (~10x batch). Log-flood'da
+        # cheksiz o'sib OOM qilmasligi uchun; oshib ketganini "+N suppressed" bilan bildiramiz.
+        self.max_buffer_size = max_buffer_size
         self.framework_prefixes = framework_prefixes
 
         # Thread-safe buffers — emit() sync chaqiriladi.
         self._lock = threading.Lock()
         self._instant_buffer: list[logging.LogRecord] = []
         self._batch_buffer: list[logging.LogRecord] = []
+        self._batch_dropped = 0
 
         self._worker_task: asyncio.Task | None = None
         self._stopping = False
@@ -96,6 +101,10 @@ class TelegramLogHandler(logging.Handler):
             with self._lock:
                 if record.levelno >= self.instant_level:
                     self._instant_buffer.append(record)
+                elif len(self._batch_buffer) >= self.max_buffer_size:
+                    # MSG-LOG-1: buffer to'lgan — yangi WARNING'ni tashlaymiz (OOM'dan himoya),
+                    # sonini _send_batch surface qiladi.
+                    self._batch_dropped += 1
                 else:
                     self._batch_buffer.append(record)
         except Exception:
@@ -163,9 +172,15 @@ class TelegramLogHandler(logging.Handler):
         with self._lock:
             records = self._batch_buffer[: self.max_batch_size]
             del self._batch_buffer[: self.max_batch_size]
+            dropped = self._batch_dropped
+            self._batch_dropped = 0
         if not records:
+            if dropped > 0:
+                await self._send(f"… +{dropped} WARNING log(s) suppressed (buffer full)")
             return
         msg = self._format_batch(records)
+        if dropped > 0:
+            msg += f"\n… +{dropped} more WARNING log(s) suppressed (buffer full)"
         await self._send(msg)
 
     async def _flush(self) -> None:

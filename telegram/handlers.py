@@ -9,15 +9,15 @@ import logging
 import re
 
 import aiohttp
-import aiosqlite
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from checkin import build_checkin_checkout_text, process_checkin_checkout_text
 from config import DB_PATH, DEFAULT_QUICK_BUTTONS
-from cooldown import check_driver_cooldown, update_conversation_time
+from cooldown import check_driver_cooldown, update_conversation_time, update_driver_cooldown
 from db import get_company_permissions
+from db.connect import db_connect
 from external import get_api_token, get_eta_message_for_load, get_loads_from_api
 from groups import (
     check_group_registered_force,
@@ -105,7 +105,7 @@ async def on_my_chat_member(event: types.ChatMemberUpdated):
         STARTED_GROUPS.discard(group_id)
         save_started_groups()
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute("DELETE FROM groups WHERE group_id=?", (group_id_str,))
         await db.execute("DELETE FROM loads WHERE group_id=?", (group_id_str,))
         await db.execute("DELETE FROM bols WHERE group_id=?", (group_id_str,))
@@ -132,7 +132,7 @@ async def start_cmd(msg: types.Message):
 
     registered = await check_group_registered_force(chat_id, chat_name, force_check=True)
 
-    if registered:
+    if registered is True:
         AWAITING_TOKEN.pop(chat_id, None)
         TOKEN_FAILED_ATTEMPTS.pop(chat_id, None)
         mark_group_started(chat_id)
@@ -152,10 +152,14 @@ async def start_cmd(msg: types.Message):
             kb.button(text="👤 I am a driver", callback_data="set_driver")
             await msg.answer("Bot is ready to use. Quick buttons are only available for drivers.",
                              reply_markup=kb.as_markup())
-    else:
+    elif registered is False:
         AWAITING_TOKEN[chat_id] = msg.from_user.id
         TOKEN_FAILED_ATTEMPTS.pop(chat_id, None)
         await msg.answer("❌ Group is not registered. Please send the admin token (single line).")
+    else:
+        # G2/AUD2-2: registered is None → transient blip (token refresh / 5xx / connection).
+        # Guruhni NA de-register qilamiz, NA keyingi xabarni "token" deb yeb qo'yamiz.
+        await msg.answer("⚠️ Temporary connection issue. Please try /start again in a moment.")
 
 
 @router.callback_query(F.data == "set_driver")
@@ -705,8 +709,19 @@ async def generic_text_handler(msg: types.Message):
     # bepul; miss bo'lsa by-group API → 404 bo'lsa REGISTERED_GROUPS tozalanadi va
     # "Group not found" xabari avtomatik yuboriladi (groups.py:301).
     registered = await wait_for_server_and_check(chat_id, chat_name, msg, force_check=False)
-    if not registered:
+    if registered is False:
+        # ANIQ 404 (backend'da o'chirilgan) — RAM cache'ni tozalab, guruhni jimgina qulflab
+        # qo'ymaslik uchun STARTED_GROUPS'dan chiqarib bir marta qayta-register xabari beramiz
+        # (keyingi xabarlar 610-satr short-circuit'ida to'xtaydi). CMD-2.
         REGISTERED_GROUPS.pop(str(chat_id), None)
+        if chat_id in STARTED_GROUPS:
+            STARTED_GROUPS.discard(chat_id)
+            save_started_groups()
+            await msg.answer("❌ This group is no longer registered. Please use /start to re-register.")
+        return
+    if registered is None:
+        # G1×CMD-2: transient backend outage (retry'lardan keyin ham noaniq) — valid guruhni
+        # de-register QILMAYMIZ (state saqlanadi), faqat shu xabarni jimgina o'tkazamiz.
         return
 
     # Internal team: classify / history-API / basket / ticket pipeline kerak emas.
@@ -799,6 +814,10 @@ async def generic_text_handler(msg: types.Message):
         priority=priority,
         ticket_type=1,
     )
+    # CD-1: cooldown'ni faqat ticket muvaffaqiyatli yuborilganda yozamiz (check_driver_cooldown
+    # 771-satrda o'qiydigan bir xil user_id kaliti bilan). Muvaffaqiyatsizlikda driver retry qila oladi.
+    if ok:
+        await update_driver_cooldown(user_id)
 
 
 # ====== Pending image callbacks ======

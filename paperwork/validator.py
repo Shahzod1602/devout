@@ -32,8 +32,21 @@ def _majority_vote(samples: list[dict]) -> dict:
     olinadi (matchedIndex 3 xil chiqsa → konservativ 0 = moslik yo'q). G'olib
     tuple'ga eng mos sample'ning health maydonlari ishlatiladi.
     """
-    voted_bol = _vote_field(samples, "isBOL", default=False)
-    voted_late = _vote_field(samples, "isLateSlip", default=False)
+    # AUD2-1: hujjat turi O'ZARO-INKOR kategoriya (hujjat ko'pi bilan BOL YOKI
+    # LateSlip). isBOL/isLateSlip'ni alohida ovozga qo'yish ikkalasi ham True bo'lib
+    # qolishiga olib kelardi (bitta sample invariantni buzsa → ikkita mustaqil 2/3
+    # ko'pchilik), buni downstream Late Slip deb qabul qilib haqiqiy BOL'ni rad etardi.
+    # Har sample'ni bitta kategoriyaga yig'ib, so'ng bir marta ovoz beramiz — both-True imkonsiz.
+    def _cat(s: dict) -> str:
+        bol, late = bool(s.get("isBOL")), bool(s.get("isLateSlip"))
+        if bol and not late:
+            return "bol"
+        if late and not bol:
+            return "late"
+        return "neither"  # both-True (ziddiyat) yoki both-False → konservativ
+    voted_cat = _vote_field([{"c": _cat(s)} for s in samples], "c", default="neither")
+    voted_bol = voted_cat == "bol"
+    voted_late = voted_cat == "late"
     voted_index = _vote_field(samples, "matchedIndex", default=0)
     logger.info("🗳️ Majority vote → isBOL=%s, isLateSlip=%s, matchedIndex=%s",
                 voted_bol, voted_late, voted_index)

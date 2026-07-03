@@ -2,7 +2,7 @@
 import logging
 import time
 
-import aiosqlite
+from db.connect import db_connect
 from fastapi import APIRouter
 
 from .db import STATS_DB_PATH, range_seconds
@@ -16,7 +16,7 @@ async def record_paperwork_event(
 ) -> None:
     """Record one paperwork analyze event. Never raises."""
     try:
-        async with aiosqlite.connect(STATS_DB_PATH) as db:
+        async with db_connect(STATS_DB_PATH) as db:
             await db.execute(
                 "INSERT INTO paperwork_events (ts, group_id, result, load_id, latency_ms, error) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -39,7 +39,7 @@ async def paperwork_summary(range: str = "24h"):
     win = range_seconds(range)
     since = int(time.time()) - win if win is not None else None
 
-    async with aiosqlite.connect(STATS_DB_PATH) as db:
+    async with db_connect(STATS_DB_PATH) as db:
         if since is not None:
             async with db.execute(
                 "SELECT result, COUNT(*), AVG(latency_ms) FROM paperwork_events WHERE ts >= ? GROUP BY result",
@@ -88,7 +88,7 @@ async def paperwork_summary(range: str = "24h"):
 @router.get("/stats/paperwork/recent", include_in_schema=False)
 async def paperwork_recent(limit: int = 50):
     limit = max(1, min(int(limit or 50), 500))
-    async with aiosqlite.connect(STATS_DB_PATH) as db:
+    async with db_connect(STATS_DB_PATH) as db:
         async with db.execute(
             "SELECT id, ts, group_id, result, load_id, latency_ms, error "
             "FROM paperwork_events ORDER BY id DESC LIMIT ?",
@@ -109,7 +109,7 @@ async def paperwork_timeseries(range: str = "24h"):
     win = range_seconds(range) or 2592000
     bucket = 3600 if win <= 86400 else 86400
     since = int(time.time()) - win
-    async with aiosqlite.connect(STATS_DB_PATH) as db:
+    async with db_connect(STATS_DB_PATH) as db:
         async with db.execute(
             f"SELECT (ts / {bucket}) * {bucket} AS b, result, COUNT(*) "
             f"FROM paperwork_events WHERE ts >= ? GROUP BY b, result ORDER BY b ASC",

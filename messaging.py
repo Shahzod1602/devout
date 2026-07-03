@@ -270,7 +270,7 @@ async def message_worker():
                 }
             try:
                 # NOTE: sync requests in async — FAZA 7'da httpx.AsyncClient ga ko'chiriladi.
-                send_response = requests.post(f"{TELEGRAM_API_BASE}/sendMessage", json=send_payload)  # noqa: ASYNC210
+                send_response = requests.post(f"{TELEGRAM_API_BASE}/sendMessage", json=send_payload, timeout=(5, 15))  # noqa: ASYNC210
                 send_result = send_response.json()
                 if send_result.get("ok"):
                     message_id = send_result["result"]["message_id"]
@@ -278,7 +278,7 @@ async def message_worker():
                     if data.has_pin_required:
                         pin_payload = {"chat_id": data.group_id, "message_id": message_id,
                                        "disable_notification": False}
-                        pin_response = requests.post(f"{TELEGRAM_API_BASE}/pinChatMessage", json=pin_payload)  # noqa: ASYNC210
+                        pin_response = requests.post(f"{TELEGRAM_API_BASE}/pinChatMessage", json=pin_payload, timeout=(5, 15))  # noqa: ASYNC210
                         pin_result = pin_response.json()
                         if pin_result.get("ok"):
                             logger.info("📌 Message pinned in group %s", data.group_id)

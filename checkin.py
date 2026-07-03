@@ -543,8 +543,11 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
         if parsed and parsed.get("load_id") is not None:
             parsed["load_id"] = str(parsed["load_id"]).strip()
         if parsed and not is_valid_load_id(parsed.get("load_id", "")):
-            logger.debug("🔍 LLM returned invalid load_id=%r, discarding", parsed.get('load_id'))
-            parsed = None
+            # CHK-A2: load_id yaroqsiz bo'lsa butun natijani tashlab yubormaymiz — faqat
+            # load_id'ni tozalaymiz, shunda quyidagi 558-satr guard'i (check-in+check-out
+            # bo'lsa) "load number kiriting" deb so'raydi, jimgina yo'qotmaydi.
+            logger.debug("🔍 LLM returned invalid load_id=%r, clearing load_id", parsed.get('load_id'))
+            parsed["load_id"] = ""
     if not parsed:
         logger.debug("🔍 No checkin/checkout found in text")
         return False

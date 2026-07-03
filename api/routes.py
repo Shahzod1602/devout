@@ -23,6 +23,7 @@ from db import (
     remove_last_pod_for_load,
     set_bol_accepted,
 )
+from db.connect import db_connect
 from fastapi import APIRouter, HTTPException
 from groups import (
     get_group_company_id,
@@ -244,7 +245,7 @@ async def create_permissions(data: PermissionsRequest):
     """Create company permissions row."""
     now = datetime.now().isoformat()
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with db_connect(DB_PATH) as db:
             await db.execute(
                 """INSERT INTO company_permissions
                    (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time,
@@ -278,7 +279,7 @@ async def create_permissions(data: PermissionsRequest):
 async def update_permissions(company_id: int, data: PermissionsUpdateRequest):
     """Upsert company permissions."""
     now = datetime.now().isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute(
             """INSERT INTO company_permissions
                (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time,
@@ -342,7 +343,7 @@ async def group_deleted_webhook(group_id: str):
     for _d in (GROUP_TEAM_DRIVERS, GROUP_TICKET_STATUS, GROUP_TICKET_MESSAGES, ACCEPTED_STATUS):
         _d.pop(group_id_str, None)
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute("DELETE FROM groups WHERE group_id=?", (group_id_str,))
         await db.execute("DELETE FROM loads WHERE group_id=?", (group_id_str,))
         await db.execute("DELETE FROM bols WHERE group_id=?", (group_id_str,))
@@ -380,7 +381,7 @@ async def get_load_status(group_id: str, load_id: str):
     delivery_count = await get_delivery_count(group_id, load_id)
     all_accepted = await all_bols_accepted(group_id, load_id) if bols_count > 0 else False
 
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT accepted, saved_at FROM bols WHERE group_id=? AND load_id=? ORDER BY id",
             (str(group_id), str(load_id)),

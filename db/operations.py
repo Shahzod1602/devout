@@ -1,8 +1,9 @@
 """Async CRUD on bot_data.db: loads, bols, pods, groups, company_permissions."""
 import logging
 
-import aiosqlite
 from config import DB_PATH
+
+from db.connect import db_connect
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ async def init_load_in_cache(group_id, load_id, pickup_count, delivery_count):
     shuning uchun reconsignment / qo'shilgan stop bo'lganda eski #N/M ko'rinardi.
     Endi faqat count ustunlari yangilanadi; bols/pods qatorlariga TEGILMAYDI.
     """
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute(
             """INSERT INTO loads (group_id, load_id, pickup_count, delivery_count)
                VALUES (?, ?, ?, ?)
@@ -31,7 +32,7 @@ async def init_load_in_cache(group_id, load_id, pickup_count, delivery_count):
 
 
 async def get_pickup_count(group_id, load_id) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT pickup_count FROM loads WHERE group_id=? AND load_id=?",
             (str(group_id), str(load_id)),
@@ -41,7 +42,7 @@ async def get_pickup_count(group_id, load_id) -> int:
 
 
 async def get_delivery_count(group_id, load_id) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT delivery_count FROM loads WHERE group_id=? AND load_id=?",
             (str(group_id), str(load_id)),
@@ -51,7 +52,7 @@ async def get_delivery_count(group_id, load_id) -> int:
 
 
 async def get_load_from_cache(group_id, load_id):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT pickup_count, delivery_count FROM loads WHERE group_id=? AND load_id=?",
             (str(group_id), str(load_id)),
@@ -64,7 +65,7 @@ async def get_load_from_cache(group_id, load_id):
 
 async def clear_load_from_cache(group_id, load_id):
     """Load + barcha BOL/POD'larini DB dan o'chirish."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute("DELETE FROM bols WHERE group_id=? AND load_id=?", (str(group_id), str(load_id)))
         await db.execute("DELETE FROM pods WHERE group_id=? AND load_id=?", (str(group_id), str(load_id)))
         await db.execute("DELETE FROM loads WHERE group_id=? AND load_id=?", (str(group_id), str(load_id)))
@@ -73,7 +74,7 @@ async def clear_load_from_cache(group_id, load_id):
 
 
 async def clear_all_loads_for_group(group_id):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute("DELETE FROM bols WHERE group_id=?", (str(group_id),))
         await db.execute("DELETE FROM pods WHERE group_id=?", (str(group_id),))
         await db.execute("DELETE FROM loads WHERE group_id=?", (str(group_id),))
@@ -84,7 +85,7 @@ async def clear_all_loads_for_group(group_id):
 # ====== bols ======
 
 async def add_bol_to_cache(group_id, load_id, message_id, file_bytes: bytes):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO bols (group_id, load_id, message_id, file_blob) VALUES (?, ?, ?, ?)",
             (str(group_id), str(load_id), message_id, file_bytes),
@@ -94,7 +95,7 @@ async def add_bol_to_cache(group_id, load_id, message_id, file_bytes: bytes):
 
 
 async def get_bols_count(group_id, load_id) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT COUNT(*) FROM bols WHERE group_id=? AND load_id=?",
             (str(group_id), str(load_id)),
@@ -104,7 +105,7 @@ async def get_bols_count(group_id, load_id) -> int:
 
 
 async def get_last_bol(group_id, load_id) -> bytes | None:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT file_blob FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1",
             (str(group_id), str(load_id)),
@@ -114,7 +115,7 @@ async def get_last_bol(group_id, load_id) -> bytes | None:
 
 
 async def all_bols_accepted(group_id, load_id) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT COUNT(*), SUM(accepted) FROM bols WHERE group_id=? AND load_id=?",
             (str(group_id), str(load_id)),
@@ -125,7 +126,7 @@ async def all_bols_accepted(group_id, load_id) -> bool:
 
 
 async def is_bol_accepted(group_id, load_id) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT accepted FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1",
             (str(group_id), str(load_id)),
@@ -136,7 +137,7 @@ async def is_bol_accepted(group_id, load_id) -> bool:
 
 async def set_last_bol_accepted(group_id, load_id, accepted=True):
     # DBS-5: atomik — SELECT id keyin UPDATE o'rniga bitta statement (read-modify-write race yo'q).
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         cur = await db.execute(
             "UPDATE bols SET accepted=? WHERE id="
             "(SELECT id FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1)",
@@ -166,7 +167,7 @@ async def has_bol_for_load(group_id, load_id) -> bool:
 
 async def remove_last_bol_for_load(group_id, load_id):
     # DBS-5: atomik DELETE (subquery bilan) — SELECT-keyin-DELETE race yo'q.
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         cur = await db.execute(
             "DELETE FROM bols WHERE id="
             "(SELECT id FROM bols WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1)",
@@ -182,7 +183,7 @@ async def remove_last_bol_for_load(group_id, load_id):
 # ====== pods ======
 
 async def add_pod_to_cache(group_id, load_id, message_id, file_bytes: bytes):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute(
             "INSERT INTO pods (group_id, load_id, message_id, file_blob) VALUES (?, ?, ?, ?)",
             (str(group_id), str(load_id), message_id, file_bytes),
@@ -192,7 +193,7 @@ async def add_pod_to_cache(group_id, load_id, message_id, file_bytes: bytes):
 
 
 async def get_pods_count(group_id, load_id) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT COUNT(*) FROM pods WHERE group_id=? AND load_id=?",
             (str(group_id), str(load_id)),
@@ -216,7 +217,7 @@ async def has_pods_for_load(group_id, load_id) -> bool:
 
 async def remove_last_pod_for_load(group_id, load_id):
     # DBS-5: atomik DELETE (subquery bilan) — SELECT-keyin-DELETE race yo'q.
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         cur = await db.execute(
             "DELETE FROM pods WHERE id="
             "(SELECT id FROM pods WHERE group_id=? AND load_id=? ORDER BY id DESC LIMIT 1)",
@@ -233,7 +234,7 @@ async def remove_last_pod_for_load(group_id, load_id):
 
 async def save_driver_id_db(group_id, driver_id, driver_name):
     """Driver ID ni DB ga saqlash. Caller in-memory cache'ni alohida boshqaradi."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO groups (group_id, driver_id, driver_name, updated_at)
             VALUES (?, ?, ?, datetime('now'))
@@ -246,7 +247,7 @@ async def save_driver_id_db(group_id, driver_id, driver_name):
 
 
 async def save_team_driver_id_db(group_id, driver_id, driver_name):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute(
             "UPDATE groups SET team_driver_id=?, team_driver_name=?, updated_at=datetime('now') WHERE group_id=?",
             (driver_id, driver_name, str(group_id)),
@@ -255,7 +256,7 @@ async def save_team_driver_id_db(group_id, driver_id, driver_name):
 
 
 async def remove_team_driver_db(group_id):
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         await db.execute(
             "UPDATE groups SET team_driver_id=NULL, team_driver_name=NULL, updated_at=datetime('now') WHERE group_id=?",
             (str(group_id),),
@@ -267,7 +268,7 @@ async def remove_team_driver_db(group_id):
 
 async def get_company_permissions(company_id: str) -> dict | None:
     """company_id bo'yicha permissions olish."""
-    async with aiosqlite.connect(DB_PATH) as db:
+    async with db_connect(DB_PATH) as db:
         async with db.execute(
             "SELECT ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time, "
             "photo_pdf, paperwork_driver_group, paperwork_internal_team, created_at, updated_at "
