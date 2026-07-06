@@ -63,6 +63,7 @@ from tickets import (
     create_message_link,
     detect_priority,
     forward_message_to_history_if_todo,
+    history_already_sent,
     send_message_to_history_api,
     send_to_swagger,
 )
@@ -734,8 +735,10 @@ async def generic_text_handler(msg: types.Message):
     try:
         dep = await classify_message(text)
     except Exception:
+        # Fail-closed: "updater" ticket-to'fon qilardi (har xabar ticket) — endi
+        # xabar chat sifatida history'ga boradi, ticket faqat aniq muammoga.
         logger.exception("❌ classify_message failed")
-        dep = "updater"
+        dep = "chat"
 
     # HND-5: butun-so'z — "basketball", "basket case" kabilar trigger qilmasin.
     if re.search(r"\bbasket\b", text.lower()):
@@ -764,12 +767,14 @@ async def generic_text_handler(msg: types.Message):
         return
 
     if dep == "chat":
-        await send_message_to_history_api(
-            group_id=chat_id,
-            writer_name=msg.from_user.full_name,
-            message=text,
-        )
-        logger.info("💬 Chat message sent to history API for group %s", chat_id)
+        # Restart-redelivery ikki marta POST qilmasin — asosiy trafik endi shu yo'ldan o'tadi.
+        if not history_already_sent(msg):
+            await send_message_to_history_api(
+                group_id=chat_id,
+                writer_name=msg.from_user.full_name,
+                message=text,
+            )
+            logger.info("💬 Chat message sent to history API for group %s", chat_id)
         return
 
     if not is_any_driver(chat_id, user_id):

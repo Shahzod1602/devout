@@ -66,39 +66,78 @@ async def summarize_text(text: str):
         return text
 
 
+# Quick tugmalar (config.DEFAULT_QUICK_BUTTONS bilan sinxron) — ataylab bosilgan
+# eskalatsiya; LLM'siz deterministik department. Model adashib "chat" desa ticket
+# jimgina yo'qolib qolmasligi uchun.
+_QUICK_BUTTON_DEPS = {
+    "🚛 vehicle issue": "fleet",
+    "📦 delivery problem": "dispatcher",
+    "🔄 system issue": "updater",
+    "⚠️ safety concern": "safety",
+    "💰 payment issue": "accounting",
+    "📋 hr question": "hr",
+}
+
+
 async def classify_message(text: str):
-    """Xabarni 8 ta department'dan biriga klassifikatsiya (default: "updater")."""
+    """Muammo-darvozasi: faqat haqiqiy muammolar department'ga (=ticket), qolgani "chat".
+
+    A/B-verified (2026-07-06, gpt-4o-mini, 149 labeled case): eski prompt oddiy
+    so'rov/savol/statuslarning 68%'ini ticket qilardi; bu prompt 0% soxta ticket,
+    0% o'tkazilgan muammo. "chat" javobi history API'ga yo'naltiriladi (ticket emas).
+    """
+    quick_dep = _QUICK_BUTTON_DEPS.get(text.strip().lower())
+    if quick_dep:
+        return quick_dep
     try:
         prompt = f"""
-        Classify this message into ONE of these categories ONLY:
-        - "chat": for greetings, small talk, casual conversation (hi, hello, good morning, how are you, etc.)
-        - "dispatcher": for dispatch-related issues, routing, delivery problems
-        - "fleet": for vehicle issues, maintenance, fleet management
-        - "safety": for safety concerns, accidents, violations
-        - "insurance": for insurance claims, coverage questions
-        - "hr": for human resources, employment issues, hiring, termination
-        - "accounting": for billing, invoices, financial matters, salary, payroll, money, payment problems
-        - "updater": for system updates, technical issues, basket-related issues
+        Decide if this driver message reports a PROBLEM that a company department must act on.
 
-        If the message contains "basket", or mentions any fruits or vegetables (e.g. apple, tomato, potato, onion, carrot, meva, sabzavot, olma, pomidor, kartoshka etc.), classify as "updater".
-        Only reply with one word from the categories above.
+        A PROBLEM means something is wrong, broken, blocked, unsafe, missing, damaged, unpaid or paid wrong, a complaint, an accident/incident, a theft — or an urgent situation where work cannot continue unless the company acts now (fuel card declined at the pump, lumper fee demanded at receiver, locked out of the app mid-delivery, driver suddenly sick or has a family emergency and cannot drive).
+        Messages can be long and rambling — if ANY part of the message reports a problem, the whole message counts as a problem.
+        A message saying an earlier problem happened AGAIN or is STILL not fixed is also a problem, even with no details (e.g. "same problem again", "it happened again", "still not fixed").
+        A problem can be mentioned casually in the middle of unrelated talk, in any language — do not miss it.
+
+        NOT a problem — reply "chat": greetings, small talk, thanks, jokes, acknowledgments (ok, got it), status updates (delivered, at pickup, eta ...), FYI plans, informational questions (when is payday, what's the receiver address, how do I ...), questions about how something works (how insurance coverage works, how detention pay works, vacation policy), routine requests when nothing is wrong (resend the rate con, share a phone number, add a fee to the next settlement).
+
+        If it IS a problem (or an explicit issue report such as "Vehicle Issue", "Delivery Problem", "System Issue", "Safety Concern", "Payment Issue", "HR Question"), reply with the department:
+        - "dispatcher": load, route, delivery, detention problems; driver suddenly unavailable (sick, family emergency) so the load must be re-planned
+        - "fleet": vehicle or trailer mechanical problems, breakdowns, maintenance issues
+        - "safety": accidents, injuries, safety hazards, violations, being pressured to drive beyond legal hours (HOS), cargo or trailer theft / break-in
+        - "insurance": insurance claim or coverage problems (a general "how does insurance work / am I covered" question is NOT a problem — that is "chat")
+        - "hr": employment problems (conflict, termination, contract)
+        - "accounting": pay, settlement, invoice, billing, fuel card problems
+        - "updater": app, bot, or system technical problems
+
+        OVERRIDE: if the message contains "basket" or mentions any fruits or vegetables (e.g. apple, tomato, potato, onion, carrot, meva, sabzavot, olma, pomidor, kartoshka etc.), reply "updater". "Basketball" (basketbol, баскетбол) is a sport, NOT "basket" — it does not trigger this rule.
+
+        Messages may be in English, Uzbek, or Russian.
+        Reply with ONLY ONE word: chat, dispatcher, fleet, safety, insurance, hr, accounting, or updater.
+        If you are not sure the message is a problem, reply "chat".
 
         Message: "{text}"
         """
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "system",
-                       "content": "Classify logistics messages precisely. Reply with only one word from the specified categories."},
+                       "content": "You triage Telegram messages from truck drivers for a logistics company. Reply with only one word from the specified categories."},
                       {"role": "user", "content": prompt}],
             max_tokens=10,
             temperature=0.1,
         )
-        classification = (res.choices[0].message.content or "").strip().lower()
+        # '"chat."' kabi punktuatsiyali javob avval valid ro'yxatdan o'tmay "updater"
+        # bo'lib soxta ticket yaratardi — chetki qo'shtirnoq/nuqtani ham olamiz.
+        classification = (res.choices[0].message.content or "").strip().lower().strip('".')
         valid_categories = ["chat", "dispatcher", "fleet", "safety", "insurance", "hr", "accounting", "updater"]
-        return classification if classification in valid_categories else "updater"
+        if classification in valid_categories:
+            return classification
+        # Fail-closed: avval "updater" edi — OpenAI format-drift/outage'da HAR BIR
+        # xabar ticket bo'lib to'fon qilardi. Xabar "chat" bilan history'da qoladi.
+        logger.warning("⚠️ classify_message: kutilmagan javob %r — 'chat' fallback", classification)
+        return "chat"
     except Exception:
-        logger.exception("❌ Classify error")
-        return "updater"
+        logger.exception("❌ Classify error — 'chat' fallback")
+        return "chat"
 
 
 # ====== Image batching ======

@@ -12,6 +12,7 @@ Bu modul history API URL'larini hard-code qiladi (https://api.abstract-it.uz/api
 """
 import asyncio
 import logging
+import time
 from datetime import datetime
 
 import aiohttp
@@ -64,6 +65,24 @@ def _history_message_key(msg: types.Message) -> str:
     return f"{msg.chat.id}:{msg.message_id}"
 
 
+def history_already_sent(msg: types.Message) -> bool:
+    """Dedup + mark: True bo'lsa bu xabar allaqachon history API'ga yuborilgan.
+
+    False qaytganda key mark qilinadi — chaqiruvchi darhol yuborishi kerak.
+    TKT-2: key await'dan OLDIN qo'shiladi, redelivery paytida ikki marta POST bo'lmaydi.
+    """
+    message_key = _history_message_key(msg)
+    if message_key in HISTORY_SENT_MESSAGE_KEYS:
+        return True
+    HISTORY_SENT_MESSAGE_KEYS.add(message_key)
+    if len(HISTORY_SENT_MESSAGE_KEYS) > 10000:
+        # TKT-8: hammasini clear qilmaymiz (darrov duplikatlar toshmasin) — yarmini saqlaymiz.
+        _keep = list(HISTORY_SENT_MESSAGE_KEYS)[5000:]
+        HISTORY_SENT_MESSAGE_KEYS.clear()
+        HISTORY_SENT_MESSAGE_KEYS.update(_keep)
+    return False
+
+
 def _build_history_message_text(msg: types.Message, fallback_text: str | None = None) -> str:
     """Har xil content turini history API uchun bitta matnga aylantirish."""
     if fallback_text:
@@ -98,19 +117,9 @@ async def forward_message_to_history_if_todo(msg: types.Message, fallback_text: 
         logger.debug("⏭️ [HISTORY] Group %s ticket not TODO, skipping history", msg.chat.id)
         return False
 
-    message_key = _history_message_key(msg)
-    if message_key in HISTORY_SENT_MESSAGE_KEYS:
-        logger.debug("⏭️ [HISTORY] Duplicate message %s, skipping", message_key)
+    if history_already_sent(msg):
+        logger.debug("⏭️ [HISTORY] Duplicate message %s, skipping", _history_message_key(msg))
         return True
-
-    # TKT-2: dedup key'ni await'dan OLDIN qo'shamiz — yuborish paytida redelivery kelsa
-    # ikki marta POST bo'lmaydi (yuborishning o'zi retry+queue bilan himoyalangan).
-    HISTORY_SENT_MESSAGE_KEYS.add(message_key)
-    if len(HISTORY_SENT_MESSAGE_KEYS) > 10000:
-        # TKT-8: hammasini clear qilmaymiz (darrov duplikatlar toshmasin) — yarmini saqlaymiz.
-        _keep = list(HISTORY_SENT_MESSAGE_KEYS)[5000:]
-        HISTORY_SENT_MESSAGE_KEYS.clear()
-        HISTORY_SENT_MESSAGE_KEYS.update(_keep)
 
     history_text = _build_history_message_text(msg, fallback_text=fallback_text)
     writer_name = msg.from_user.full_name if msg.from_user else "unknown"
@@ -128,8 +137,15 @@ async def forward_message_to_history_if_todo(msg: types.Message, fallback_text: 
     return True
 
 
+# Outage'da har bir xabar uchun alohida Telegram alert yubormaslik uchun throttle:
+# klassifikator endi asosiy trafikni ham history'ga yo'naltiradi (chat yo'li).
+_HISTORY_ALERT_INTERVAL = 300  # soniya
+_last_history_alert_ts = 0.0
+
+
 async def send_message_to_history_api(group_id: str, writer_name: str, message: str):
     """Habarni darhol history API'ga yuborish. 3 urinishdan keyin FAILED_MESSAGES_QUEUE'ga qo'shadi."""
+    global _last_history_alert_ts
     payload = {
         "groupId": str(group_id),
         "writerName": writer_name,
@@ -178,7 +194,12 @@ async def send_message_to_history_api(group_id: str, writer_name: str, message: 
         if attempt < 2:
             await asyncio.sleep(2 ** attempt)
 
-    await send_error_to_group(f"❌ [HISTORY API] All 3 attempts failed | writer={writer_name} | Adding to retry queue", group_id=group_id)
+    now_ts = time.monotonic()
+    if now_ts - _last_history_alert_ts >= _HISTORY_ALERT_INTERVAL:
+        _last_history_alert_ts = now_ts
+        await send_error_to_group(f"❌ [HISTORY API] All 3 attempts failed | writer={writer_name} | Adding to retry queue", group_id=group_id)
+    else:
+        logger.warning("❌ [HISTORY API] All 3 attempts failed | group=%s | writer=%s | queued (alert throttled)", group_id, writer_name)
     FAILED_MESSAGES_QUEUE.append(payload)
     return False
 
