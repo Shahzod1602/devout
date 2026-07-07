@@ -13,11 +13,17 @@ from datetime import datetime
 
 import aiohttp
 import requests
+from aiogram.exceptions import TelegramMigrateToChat
 from config import ACTION_LOGS_URL, BOT_TOKEN, ENV_LABEL, ERROR_GROUP_ID, PAPERWORK_LOG_GROUP_ID, ssl_context
 from external import get_api_token
 from state import PAPERWORK_MSG_LINKS, bot, error_bot, message_queue
 
 logger = logging.getLogger(__name__)
+
+# Log-guruh oddiy guruhdan supergroup'ga ko'tarilsa Telegram chat_id'ni o'zgartiradi
+# (TelegramMigrateToChat, 2026-07-07 prod'da kuzatildi: -5535325878 → -1004283245217).
+# Yangi ID'ni runtime'da eslab qolamiz — restartgacha ham fayllar yangi guruhga boradi.
+_LOG_GROUP_MIGRATED_ID: int | None = None
 
 # Eng ko'pi bilan shuncha RefNumber->link yozuvini saqlaymiz (xotira o'smasligi uchun).
 PAPERWORK_LINK_CAP = 2000
@@ -93,6 +99,7 @@ async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status:
     "Open original" message-link (message_id berilgan bo'lsa).
     PAPERWORK_LOG_GROUP_ID=0 bo'lsa hech narsa qilmaydi (feature o'chiq).
     """
+    global _LOG_GROUP_MIGRATED_ID
     if not PAPERWORK_LOG_GROUP_ID:
         return
     from aiogram.types import BufferedInputFile
@@ -140,12 +147,25 @@ async def send_paperwork_to_log_group(file_bytes: bytes, file_name: str, status:
         if len(caption) > 1024:
             caption = caption[:1000].rsplit("\n", 1)[0] + "\n…"
 
-        await bot.send_document(
-            PAPERWORK_LOG_GROUP_ID,
-            BufferedInputFile(file_bytes, filename=file_name or "document.pdf"),
-            caption=caption,
-            parse_mode="HTML",
-        )
+        target_group = _LOG_GROUP_MIGRATED_ID or PAPERWORK_LOG_GROUP_ID
+        try:
+            await bot.send_document(
+                target_group,
+                BufferedInputFile(file_bytes, filename=file_name or "document.pdf"),
+                caption=caption,
+                parse_mode="HTML",
+            )
+        except TelegramMigrateToChat as e:
+            # Guruh supergroup bo'lgan — yangi ID bilan darhol qayta yuboramiz va eslab qolamiz.
+            _LOG_GROUP_MIGRATED_ID = e.migrate_to_chat_id
+            logger.warning("send_paperwork_to_log_group: log group migrated %s → %s — retrying",
+                           target_group, e.migrate_to_chat_id)
+            await bot.send_document(
+                e.migrate_to_chat_id,
+                BufferedInputFile(file_bytes, filename=file_name or "document.pdf"),
+                caption=caption,
+                parse_mode="HTML",
+            )
     except Exception:
         logger.exception("send_paperwork_to_log_group: failed to forward file")
 

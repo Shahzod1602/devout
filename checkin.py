@@ -176,6 +176,10 @@ def parse_time_to_iso(time_str: str) -> str:
 
 def extract_timezone(time_str: str) -> int:
     """Vaqt stringidan timezone enum qiymatini olish. Default: PST (3)."""
+    # LLM parse checkin/checkout'ni None qaytarishi mumkin — re.search(None) TypeError
+    # bilan butun handler'ni yiqitardi (prod log 2026-07-07). Guard: default PST.
+    if not time_str or not isinstance(time_str, str):
+        return 3
     match = re.search(r'(EDT|EST|CDT|CST|MDT|MST|PDT|PST)', time_str, re.IGNORECASE)
     if match:
         return TIMEZONE_MAP.get(match.group(1).lower(), 3)

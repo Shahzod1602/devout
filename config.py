@@ -76,7 +76,9 @@ ERROR_GROUP_ID = int(os.environ.get("ERROR_GROUP_ID", "-5133077215"))
 # === Paperwork log group ===
 # Har bir paperwork fayli (selected yoki skipped) sababi bilan shu guruhga
 # forward qilinadi. 0 bo'lsa — feature o'chiq (group_id berilgunicha).
-PAPERWORK_LOG_GROUP_ID = int(os.environ.get("PAPERWORK_LOG_GROUP_ID", "-5535325878"))
+# 2026-07-07: log-guruh supergroup'ga ko'tarildi — Telegram yangi ID berdi
+# (eski -5535325878 endi TelegramMigrateToChat xatosi beradi).
+PAPERWORK_LOG_GROUP_ID = int(os.environ.get("PAPERWORK_LOG_GROUP_ID", "-1004283245217"))
 
 # === Environment ===
 # ENV_LABEL — error log message'ida ko'rinadi: "❌ [bot] ..." yoki "❌ [botprod] ...".
