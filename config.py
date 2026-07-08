@@ -123,6 +123,11 @@ VERIFY_DELIVERY_URL = os.environ.get(
 # aks holda paperwork kartada ❌. 0 — eski presence-only xulq (kill-switch).
 PO_MATCH_ENFORCE = os.environ.get("PO_MATCH_ENFORCE", "1").strip() == "1"
 
+# Sahifa yetishmasa (hujjatda "PAGE: 1 of 3" bosilgan, driver 1 ta yuborgan) BOL/POD
+# QABUL QILINMAYDI — driver'dan barcha sahifalar so'raladi. 0 — faqat kartada ❌
+# ko'rsatiladi, qabul eski tartibda davom etadi (kill-switch).
+PAGE_COUNT_ENFORCE = os.environ.get("PAGE_COUNT_ENFORCE", "1").strip() == "1"
+
 # === API login credentials ===
 LOGIN_CREDENTIALS = {
     "email": _require_env("LOGIN_EMAIL"),

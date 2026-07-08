@@ -16,7 +16,7 @@ from io import BytesIO
 
 import httpx
 from aiogram import types
-from config import BOT_PORT
+from config import BOT_PORT, PAGE_COUNT_ENFORCE
 from db import (
     add_bol_to_cache,
     add_pod_to_cache,
@@ -333,6 +333,18 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 return "skipped", f"Late Slip post failed: {late_post_result.get('error')}", load_display_id
 
         if file_type == 1:
+            # SAHIFA YETISHMASA — BOL QABUL QILINMAYDI. Hujjatda "PAGE: 1 of 3" bosilgan
+            # bo'lsa-yu driver kamroq yuborgan bo'lsa, "✅ received" demay to'liq to'plamni
+            # so'raymiz (aks holda driver ketib qoladi, karta qizili esa kech ko'rinadi).
+            if PAGE_COUNT_ENFORCE and check_result.get("pagesMissing"):
+                _pcs = check_result.get("pageCountSummary") or "fewer pages than the document states"
+                await checking_msg.delete()
+                await msg.answer(
+                    f"⚠️ Load #{load_display_id} BOL is INCOMPLETE — the document shows {_pcs}. "
+                    f"Please send ALL pages of the BOL together."
+                )
+                return "skipped", f"BOL incomplete — {_pcs} (resend requested)", new_load_id
+
             await add_bol_to_cache(chat_id, new_load_id, msg.message_id, file_bytes_value)
             bols_count = await get_bols_count(chat_id, new_load_id)
             required_bols = await get_pickup_count(chat_id, new_load_id)
@@ -391,10 +403,6 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                     await msg.answer(f"❌ Could not read the POD for Load #{load_display_id}. Please resend a clearer copy.")
                     return "skipped", "POD analysis failed — resend requested", new_load_id
 
-                await add_pod_to_cache(chat_id, new_load_id, msg.message_id, file_bytes_value)
-                pods_count = await get_pods_count(chat_id, new_load_id)
-                required_pods = await get_delivery_count(chat_id, new_load_id)
-
                 # IC-2: `str(... or "")` — Gemini note null qaytarsa None[:200] TypeError berardi.
                 address_match = bool(verify_data.get("address_match", False))
                 pod_valid = bool(verify_data.get("pod_valid", False))
@@ -422,6 +430,22 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                     bol_pages is not None and pod_pages is not None
                     and (bol_pages != pod_pages or bol_incomplete or pod_incomplete)
                 )
+
+                # SAHIFA YETISHMASA — POD QABUL QILINMAYDI (hujjatda "PAGE: 1 of 3"
+                # bosilgan, kamrog'i yuborilgan). Cache/count OSHIRILMAYDI — driver
+                # to'liq to'plamni qayta yuboradi. Ortiqcha sahifa (real > printed)
+                # bloklamaydi — u faqat kartada ❌ bo'ladi.
+                if (PAGE_COUNT_ENFORCE and pod_incomplete
+                        and isinstance(pod_printed, int) and (pod_pages or 0) < pod_printed):
+                    await msg.answer(
+                        f"⚠️ Load #{load_display_id} POD is INCOMPLETE — the document shows "
+                        f"{pod_pages} of {pod_printed} page(s). Please send ALL pages of the POD together."
+                    )
+                    return "skipped", f"POD incomplete — {pod_pages} of {pod_printed} (resend requested)", new_load_id
+
+                await add_pod_to_cache(chat_id, new_load_id, msg.message_id, file_bytes_value)
+                pods_count = await get_pods_count(chat_id, new_load_id)
+                required_pods = await get_delivery_count(chat_id, new_load_id)
 
                 if page_mismatch:
                     # POD-2: page count muammosida signature/address'ni YASHIL qilib YUBORMAYMIZ.

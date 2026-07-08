@@ -1,7 +1,10 @@
 """POST /check-bol endpoint — orchestrates the full paperwork analysis flow."""
 import asyncio
 import logging
+import re
 import time
+
+import fitz  # PyMuPDF — PDF text-qatlamidan bosilgan "Page X of Y" ni deterministik o'qish
 
 from config import PO_MATCH_ENFORCE
 from external import get_load_details, get_loads_from_api
@@ -23,6 +26,35 @@ def _health_field(v):
     crash qilardi va butun paperwork issue jimgina tushib qolardi. Endi konservativ
     "tekshirilmadi" (isHealthy=False) qaytaramiz — sog'lom deb belgilamaymiz."""
     return v if isinstance(v, dict) else {"isHealthy": False, "summary": "Not checked"}
+
+
+# Bosilgan sahifa-ko'rsatkichi: FAQAT "page/pg/sheet" prefiksli variantlar ("PAGE: 1 Of 3",
+# "Page 1/4", "Sheet 2 of 3"). Prefiksisiz "1 of 3" ATAYIN qamrab olinmagan — hujjat matnida
+# "1 of 3 pallets" kabi soxta trigger bo'lardi; ularni model o'qiydi.
+_PRINTED_TOTAL_RE = re.compile(r"(?:page|pg|sheet)\s*\.?\s*:?\s*\d{1,3}\s*(?:of|/)\s*(\d{1,3})", re.I)
+
+
+def _printed_total_from_pdf_text(file_bytes: bytes, file_name: str) -> int | None:
+    """PDF text-qatlamidan bosilgan "Page X of Y" umumiy sonini deterministik o'qiydi.
+
+    Model bosilgan ko'rsatkichni o'tkazib yuborsa ham (burchak/sifat), matnli PDF'larda
+    bu backstop ushlaydi. Skan/rasm hujjatlarda text-qatlam bo'lmaydi → None (model javobi
+    ishlatiladi). Bir nechta topilsa eng KATTASI olinadi (multi-doc paketda to'liq talab)."""
+    if not (file_name or "").lower().endswith(".pdf"):
+        return None
+    try:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        try:
+            totals = []
+            for page_num in range(min(len(doc), MAX_PAGES)):
+                for m in _PRINTED_TOTAL_RE.finditer(doc.load_page(page_num).get_text()):
+                    totals.append(int(m.group(1)))
+            return max(totals) if totals else None
+        finally:
+            doc.close()
+    except Exception:
+        logger.debug("printed-total regex o'qishda xato — model javobi ishlatiladi", exc_info=True)
+        return None
 
 
 async def _attach_references(group_id: str, loads: list) -> None:
@@ -230,11 +262,23 @@ async def check_bol_endpoint(
         _real = _pc.get("realPages")
         _printed = _pc.get("printedTotal")
         _junk = _pc.get("irrelevantPages") or 0
+        # Deterministik backstop: model bosilgan ko'rsatkichni o'qimagan bo'lsa, PDF
+        # text-qatlamidagi "Page X of Y" dan olamiz (skan/rasmda None — model yagona manba).
+        if not isinstance(_printed, int):
+            _regex_printed = _printed_total_from_pdf_text(bol_file_bytes, bol_file_name)
+            if _regex_printed is not None:
+                _printed = _regex_printed
+                logger.info("📄 printedTotal model'dan kelmadi — PDF matnidan olindi: %s", _printed)
+        pages_missing = False
         if isinstance(_real, int) and _real > 0:
             # PWK-7: hujjat MAX_PAGES'dan ko'p sahifali bo'lsa (biz cheklaganmiz) — bu
             # "incomplete" (drayver aybi) emas, balki bizning tahlil cheklovimiz.
             _capped = isinstance(_printed, int) and _printed > MAX_PAGES
             _incomplete = isinstance(_printed, int) and _real != _printed and not _capped
+            # SAHIFA YETISHMAYDI: hujjatda "PAGE: 1 of 3" bosilgan, driver kamroq yuborgan.
+            # Pipeline bu flag bilan BOL'ni qabul qilmay driver'dan to'liq to'plam so'raydi.
+            # real > printed (ortiqcha sahifa) bloklamaydi — faqat kartada ❌.
+            pages_missing = bool(_incomplete and isinstance(_printed, int) and _real < _printed)
             if _capped:
                 _summary = f"{_real} of {_printed} page(s) — only first {MAX_PAGES} analyzed"
             elif isinstance(_printed, int):
@@ -288,6 +332,10 @@ async def check_bol_endpoint(
             # reference raqamlari va tekshiruv rejimi (PO↔RC tekshiruvi).
             "references": matched_load.get("references") or [],
             "poCheckMode": matched_load.get("poCheckMode") or "presence",
+            # Hujjatda bosilgan sahifa soni yuborilganidan KO'P (masalan "1 of 3" dan
+            # faqat 1 tasi kelgan) — pipeline BOL'ni qabul qilmay to'liq to'plam so'raydi.
+            "pagesMissing": pages_missing,
+            "pageCountSummary": (paperwork_data.get("pageCount") or {}).get("summary") or "",
         }
 
     except Exception as e:
