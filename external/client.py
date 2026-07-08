@@ -118,6 +118,45 @@ async def get_loads_from_api(group_id: str) -> list:
     raise HTTPException(status_code=response.status_code, detail=f"API xatosi: {response.text}")
 
 
+async def get_load_details(group_id, load_db_id) -> dict:
+    """Load detali (PO/Other/Ref raqamlari uchun) — GET /v1/loads/{id}.
+
+    Bu BOYITISH (enrichment) yo'li: har qanday xatoda bo'sh dict qaytaradi va
+    hech qachon RAISE QILMAYDI — PO↔RC tekshiruvi hech bo'lmasa RefNumber bilan
+    davom etaveradi. Prod backend ba'zi endpointlarda `/v1` segmentini qabul
+    qilmaydi (SLEEP_TIMER_PATH izohiga q.) — 404/405 da `/loads/{id}` fallback.
+    """
+    token = await get_api_token()
+    if not token:
+        return {}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "*/*",
+        "Accept-Language": "EN",
+        "X-Group-Id": str(group_id),
+    }
+    for path in (f"/v1/loads/{load_db_id}", f"/loads/{load_db_id}"):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client_http:
+                response = await client_http.get(f"{BASE_URL}{path}", headers=headers)
+        except httpx.HTTPError as e:
+            logger.debug("load details so'rovi xato (id=%s, %s): %s", load_db_id, path, e)
+            return {}
+        if response.status_code in (404, 405):
+            continue  # /v1'siz variantni sinaymiz
+        if response.status_code == 200:
+            try:
+                body = response.json()
+            except ValueError:
+                return {}
+            if isinstance(body, dict) and isinstance(body.get("data"), dict):
+                return body["data"]
+            return body if isinstance(body, dict) else {}
+        logger.debug("load details HTTP %s (id=%s, %s)", response.status_code, load_db_id, path)
+        return {}
+    return {}
+
+
 async def get_eta_message_for_load(group_id, load_id) -> dict:
     """Fetch the ETA-update message for a load from the backend.
 
@@ -212,6 +251,11 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
             "PickUpAddress.Summary": (result_data.get("pickUpAddress") or {}).get("summary") or "Not checked",
             "DeliveryAddressAddress.IsHealthy": str((result_data.get("deliveryAddressAddress") or {}).get("isHealthy", False)).lower(),
             "DeliveryAddressAddress.Summary": (result_data.get("deliveryAddressAddress") or {}).get("summary") or "Not checked",
+            # BOL pallet/piece soni vs RC (broker short-load claim'idan himoya). Default
+            # sog'lom "N/A" — RC'da pallet yo'q loadlar (legacy) qizil bo'lmasin. Backend
+            # DTO'da PalletCount property paydo bo'lguncha bu field jimgina tushiriladi.
+            "PalletCount.IsHealthy": str((result_data.get("palletCount") or {}).get("isHealthy", True)).lower(),
+            "PalletCount.Summary": (result_data.get("palletCount") or {}).get("summary") or "N/A",
             "PageCount.IsHealthy": str(result_data.get("pageCount", {}).get("isHealthy", True)).lower(),
             "PageCount.Summary": result_data.get("pageCount", {}).get("summary") or str(page_count),
             "RouteNumber.IsHealthy": str(result_data.get("routeNumber", {}).get("isHealthy", True)).lower(),

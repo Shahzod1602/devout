@@ -5,6 +5,7 @@ import logging
 from collections import Counter
 from io import BytesIO
 
+from config import PO_MATCH_ENFORCE
 from PIL import Image
 from stats import current_gemini_endpoint
 
@@ -129,13 +130,50 @@ async def validate_bol_with_loads_gemini(bol_images: list, loads: list) -> dict:
             "index": i + 1,
             "loadId": load.get("loadId"),
             "dbId": load.get("id"),
-            "loadNumber": load.get("loadNumber"),
+            # Backend RC raqamini "loadId" (RefNumber) sifatida beradi — alohida
+            # "loadNumber" kaliti payload'da YO'Q (avval doim null bo'lib turardi).
+            "loadNumber": load.get("loadNumber") or load.get("loadId"),
+            # PO↔RC tekshiruvi uchun MA'LUM referencelar (RefNumber + QM PO/Other;
+            # api._attach_references to'ldiradi) va tekshiruv rejimi. Rejim KODDA
+            # hisoblanadi (api.py): "strict" faqat to'plam ishonchli bo'lganda;
+            # aks holda (enrichment yo'q/muvaffaqiyatsiz, US Mail, faqat RefNumber
+            # ma'lum) — "presence": legacy/email-RC loadlar noto'g'ri qizil bo'lmaydi.
+            "references": load.get("references") or ([str(load.get("loadId"))] if load.get("loadId") else []),
+            "poCheckMode": load.get("poCheckMode") or "presence",
             "pickup": pickup_addrs,
             "delivery": delivery_addrs,
             "weight": load.get("weight", ""),
+            # RC'dagi pallet/piece soni. Backend'da alohida "pallets" field yo'q —
+            # askai uni commodity ichiga biriktiradi (masalan "DAIRY (720 Cases)"),
+            # shuning uchun commodity ham prompt'ga beriladi; rule 6 ikkalasidan o'qiydi.
+            "pallets": load.get("pallets") or "",
+            "commodity": load.get("commodity") or "",
         })
 
     loads_json = json.dumps(loads_info, indent=2)
+
+    # PO↔RC qoidasi: rejim har bir load uchun KODDA hisoblanadi (api.py poCheckMode) —
+    # model faqat bitta maydonga bo'ysunadi, prompt-istisnolar yo'q (istisno-matni
+    # hujjat ko'rinishiga "yuqib ketishi" live'da kuzatilgan edi).
+    # PO_MATCH_ENFORCE=0 — eski presence-only xulqqa kill-switch.
+    if PO_MATCH_ENFORCE:
+        po_rule = (
+            '3. PO NUMBER: obey the matched load\'s "poCheckMode" field — it alone decides the mode.\n'
+            '   - "strict": the load\'s "references" value lists ALL reference numbers KNOWN from the\n'
+            '     RateCon/system. Compare every reference number printed on the document (BOL#, PO#, Pro#,\n'
+            '     Trip#, Route#, Ref#, Order#) against that list, ignoring case, spaces, dashes, \'#\' signs\n'
+            '     and leading zeros; a document number that contains or is contained by a known reference\n'
+            '     also counts as a match, but only when the shorter side has at least 5 characters.\n'
+            '     isHealthy=true ONLY if at least one document reference matches. If the document prints\n'
+            '     reference number(s) but NONE matches, isHealthy=false and the summary MUST show both\n'
+            '     sides, e.g. "BOL PO 55501 not in RC (RC refs: 4332798, 97135975)". If no reference\n'
+            '     number is readable on the document at all, isHealthy=false ("no PO/reference found").\n'
+            '   - "presence" (or the field is missing): isHealthy=true if any reference number is present\n'
+            '     and readable on the document, and prefix the summary with "presence-only:".\n'
+            '     isHealthy=false only when no reference number is readable at all.'
+        )
+    else:
+        po_rule = '3. PO NUMBER: isHealthy=true if a BOL#/PO#/Pro#/Trip#/Route# is present and readable on the document.'
 
     prompt = f"""You are a logistics document verification expert. Carefully analyze the freight shipping document in the image.
 
@@ -192,11 +230,22 @@ STEP 3 — Validate matched load fields (each isHealthy is true ONLY per the rul
    isHealthy=false on weight alone.
 2. SIGNATURE: isHealthy=true ONLY if a handwritten driver/shipper signature or an inked stamp is
    visible. A printed/typed name alone, or an empty signature line, = false.
-3. PO NUMBER: isHealthy=true if a BOL#/PO#/Pro#/Trip#/Route# is present and readable on the document.
+{po_rule}
 4. PICKUP ADDRESS: isHealthy=true if the document's origin/shipper city AND state match the matched
    load's pickup (street differences are allowed); false if city or state differ or are unreadable.
 5. DELIVERY ADDRESS: isHealthy=true if the document's destination/consignee city AND state match the
    matched load's delivery (street differences allowed); false if city or state differ or are unreadable.
+6. PALLET COUNT: compare the pallet/piece count printed on the document (look for "pallets", "PLTS",
+   "pieces", "PCS", "skids", "cases", or a quantity column) with the matched load's RateCon count —
+   found in its "pallets" value OR embedded in its "commodity" text (e.g. commodity
+   "DAIRY PRODUCTS (720 Cases)" means the RC count is 720 Cases). isHealthy=false ONLY when BOTH counts are readable AND
+   they clearly differ — delivering fewer pieces than the RateCon states is what brokers file claims
+   for. Be unit-aware: "24 pallets" vs "24 PLTS" is a MATCH; a pallet count vs a piece count with
+   different numbers is NOT automatically a mismatch (e.g. 24 pallets can hold 720 cases) — flag only
+   when the counts are in the SAME unit type or the document itself shows the RC's unit with a
+   different number. If the load provides no count (its "pallets" is empty AND no count is embedded
+   in "commodity"), or the document shows no count, set isHealthy=true with summary "N/A". Always
+   put both values in "summary" when available (e.g. "RC: 24 pallets, BOL: 20 pallets").
 
 STEP 4 — Page count & relevance (the upload may contain several images):
   - Some images are NOT document pages: truck/trailer photos, the cab, a license plate,
@@ -219,6 +268,7 @@ Return ONLY valid JSON — no markdown, no code fences, no extra text:
     "poNumber": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "pickUpAddress": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "deliveryAddressAddress": {{"isHealthy": true or false, "summary": "brief explanation"}},
+    "palletCount": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "pageCount": {{"printedTotal": null, "realPages": 1, "irrelevantPages": 0}}
 }}"""
 

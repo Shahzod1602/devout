@@ -19,8 +19,12 @@ def _detect_file_info(data: bytes, base_name: str) -> tuple[str, str]:
     return f"{base_name}.pdf", "application/octet-stream"
 
 
-async def verify_delivery(bol_bytes: bytes, pod_bytes: bytes) -> dict:
-    """BOL va POD ni /verify-delivery API ga yuborish."""
+async def verify_delivery(bol_bytes: bytes, pod_bytes: bytes, references: list | None = None) -> dict:
+    """BOL va POD ni /verify-delivery API ga yuborish.
+
+    `references` — loadning ma'lum RC/sistem reference raqamlari (PO↔RC tekshiruvi
+    uchun askai'ga uzatiladi; askai javobida po_match/po_notes qaytadi). Bo'sh/None
+    bo'lsa yuborilmaydi — askai eski xulqda ishlaydi (po_match=null)."""
     try:
         bol_name, bol_mime = _detect_file_info(bol_bytes, "bol")
         pod_name, pod_mime = _detect_file_info(pod_bytes, "pod")
@@ -29,9 +33,13 @@ async def verify_delivery(bol_bytes: bytes, pod_bytes: bytes) -> dict:
             'bol': (bol_name, bol_bytes, bol_mime),
             'pod': (pod_name, pod_bytes, pod_mime),
         }
+        data = {}
+        refs_str = ", ".join(str(r).strip() for r in (references or []) if str(r).strip())
+        if refs_str:
+            data["references"] = refs_str[:500]
 
         async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(VERIFY_DELIVERY_URL, files=files)
+            response = await client.post(VERIFY_DELIVERY_URL, files=files, data=data)
 
             if response.status_code == 200:
                 result = response.json()

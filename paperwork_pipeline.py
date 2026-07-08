@@ -342,6 +342,18 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
             logger.debug("📋 check_result keys: %s", list(check_result.keys()))
             if 'paperwork_result' in check_result:
                 paperwork = check_result['paperwork_result']
+
+                # Pallet/piece mismatch — haydovchiga darhol aytamiz: u hali shipper
+                # yonida, sonni qayta sanash / BOLga izoh oldirish imkoni bor
+                # (broker short-load claim qilishidan OLDIN).
+                _pallet_check = paperwork.get("palletCount") or {}
+                if _pallet_check.get("isHealthy") is False:
+                    try:
+                        _pc_summary = _pallet_check.get("summary") or ""
+                        await msg.answer(f"⚠️ Pallet count mismatch — {_pc_summary}".strip(" —"))
+                    except Exception:
+                        logger.debug("pallet mismatch ogohlantirishi yuborilmadi", exc_info=True)
+
                 logger.debug("📋 paperwork loadId=%s, calling post_paperwork_issue...", paperwork.get('loadId'))
                 bol_post_result = await post_paperwork_issue(
                     paperwork, file_bytes_value, file_name or "bol_document",
@@ -361,7 +373,15 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 logger.warning("⚠️ No BOL on file for group=%s, load=%s", chat_id, new_load_id)
                 return "skipped", "POD received but no BOL on file yet", new_load_id
 
-            result = await verify_delivery(bol_bytes, file_bytes_value)
+            # PO↔RC: FAQAT strict rejimdagi loadlarda referencelarni uzatamiz —
+            # presence rejimida (US Mail, faqat RefNumber ma'lum, enrichment yo'q)
+            # askai'ga refs bormaydi → po_match=null → kartada N/A (eski xulq).
+            _pod_refs = (
+                check_result.get("references") or []
+                if check_result.get("poCheckMode") == "strict"
+                else []
+            )
+            result = await verify_delivery(bol_bytes, file_bytes_value, references=_pod_refs)
             if result.get("success"):
                 verify_data = result.get("data", {})
                 # AUD2-4: askai hujjatni o'qiy olmagan bo'lsa (analysis_failed) — bu POD "qabul
@@ -418,11 +438,24 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 if pod_notes.startswith("Error:"):
                     pod_notes = "Could not analyze — please Resend."
 
+                # PO↔RC: askai po_match bool bo'lsa — qat'iy natija (false = POD'dagi
+                # PO/ref RC referencelariga mos emas). Aks holda (references
+                # yuborilmagan / POD'da ref o'qilmadi / eski askai) — N/A degrade,
+                # POD qabul oqimi bloklanmaydi. Page-mismatch'da tahlil ishonchsiz
+                # (yuqoridagi guard bilan bir mantiq) — PO qatorini ham N/A qilamiz,
+                # noto'g'ri "Not in RC" qizili bilan ticket ko'tarmaymiz.
+                _po_match = verify_data.get("po_match")
+                _po_notes = str(verify_data.get("po_notes") or "")[:200]
+                if isinstance(_po_match, bool) and not page_mismatch:
+                    _po_row = {"isHealthy": _po_match, "summary": _po_notes or ("Match" if _po_match else "Not in RC")}
+                else:
+                    _po_row = {"isHealthy": True, "summary": "N/A"}
+
                 pod_paperwork_data = {
                     "loadId": new_load_id,
                     "weight": {"isHealthy": True, "summary": "N/A"},
                     "signature": {"isHealthy": pod_valid, "summary": pod_notes if pod_notes else ("Found" if pod_valid else "Not found")},
-                    "poNumber": {"isHealthy": True, "summary": "N/A"},
+                    "poNumber": _po_row,
                     "pickUpAddress": {"isHealthy": address_match, "summary": address_notes if address_notes else ("Match" if address_match else "Mismatch")},
                     "deliveryAddressAddress": {"isHealthy": address_match, "summary": address_notes if address_notes else ("Match" if address_match else "Mismatch")},
                 }

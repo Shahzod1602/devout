@@ -118,6 +118,11 @@ VERIFY_DELIVERY_URL = os.environ.get(
     "https://askai.test.abstract-it.uz/verify-delivery",
 )
 
+# PO ↔ RC reference tekshiruvi: 1 (default) — BOL/POD'dagi PO/ref raqami loadning
+# MA'LUM referencelariga (RefNumber + QM poNumber/otherNumber) mos kelishi shart,
+# aks holda paperwork kartada ❌. 0 — eski presence-only xulq (kill-switch).
+PO_MATCH_ENFORCE = os.environ.get("PO_MATCH_ENFORCE", "1").strip() == "1"
+
 # === API login credentials ===
 LOGIN_CREDENTIALS = {
     "email": _require_env("LOGIN_EMAIL"),

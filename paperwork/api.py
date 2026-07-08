@@ -1,8 +1,10 @@
 """POST /check-bol endpoint — orchestrates the full paperwork analysis flow."""
+import asyncio
 import logging
 import time
 
-from external import get_loads_from_api
+from config import PO_MATCH_ENFORCE
+from external import get_load_details, get_loads_from_api
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from messaging import send_error_to_group
 from stats import record_paperwork_event
@@ -21,6 +23,61 @@ def _health_field(v):
     crash qilardi va butun paperwork issue jimgina tushib qolardi. Endi konservativ
     "tekshirilmadi" (isHealthy=False) qaytaramiz — sog'lom deb belgilamaymiz."""
     return v if isinstance(v, dict) else {"isHealthy": False, "summary": "Not checked"}
+
+
+async def _attach_references(group_id: str, loads: list) -> None:
+    """Har bir load'ga PO↔RC tekshiruvi uchun ikki maydon biriktiradi:
+    `references` (MA'LUM raqamlar to'plami) va `poCheckMode` ("strict" | "presence").
+
+    Manbalar: load payload'ining o'zi (loadId = RC RefNumber; backend kelajakda
+    poNumber/otherNumber/references qo'shsa — avtomatik olinadi) + GET /v1/loads/{id}
+    detali (QM-sync poNumber/otherNumber). Detal chaqiruvi xatosi jimgina yutiladi.
+
+    "strict" FAQAT to'plam ISHONCHLI bo'lganda (RefNumber'dan TASHQARI kamida bitta
+    raqam ma'lum) — email-RC loadlarda hujjatdagi PO aslida RC PDF ichida bo'lishi
+    mumkin, lekin backend uni hali saqlamaydi; bunday holda strict qizil NOTO'G'RI
+    bo'lardi → presence. US Mail ham doim presence (Route/Trip/Seal'ni us_mail
+    analyzer alohida tekshiradi, USPS hujjatida RefNumber chop etilmaydi)."""
+
+    _detail_sem = asyncio.Semaphore(8)  # backend'ga detal-so'rovlar cheklangan parallelizmda
+
+    async def _one(ld: dict):
+        refs: list = []
+
+        def _add(v):
+            s = str(v).strip() if v is not None else ""
+            if s and s.lower() not in ("none", "null", "n/a") and s not in refs:
+                refs.append(s)
+
+        _add(ld.get("loadId"))
+        _add(ld.get("poNumber"))
+        _add(ld.get("otherNumber"))
+        for r in (ld.get("references") or []):
+            _add(r)
+        if ld.get("id") is not None:
+            async with _detail_sem:
+                detail = await get_load_details(group_id, ld.get("id"))
+            if not detail:
+                logger.info("load %s detail olinmadi — PO tekshiruvi presence rejimda", ld.get("id"))
+            _add(detail.get("poNumber"))
+            _add(detail.get("otherNumber"))
+            _add(detail.get("refNumber"))
+        ld["references"] = refs
+        try:
+            us_mail = bool(is_us_mail_load(ld))
+        except Exception:
+            us_mail = False
+        ld["isUsMail"] = us_mail
+        ld["poCheckMode"] = "strict" if (len(refs) >= 2 and not us_mail) else "presence"
+
+    try:
+        await asyncio.gather(*[_one(ld) for ld in loads])
+    except Exception:
+        logger.debug("reference enrichment xatosi — presence rejimga tushamiz", exc_info=True)
+        for ld in loads:
+            if not isinstance(ld.get("references"), list):
+                ld["references"] = [str(ld["loadId"])] if ld.get("loadId") else []
+            ld.setdefault("poCheckMode", "presence")
 
 
 @router.post("/check-bol")
@@ -53,6 +110,11 @@ async def check_bol_endpoint(
             await record_paperwork_event(group_id, "no_loads", latency_ms=_lat())
             return {"success": False, "message": "Bu guruh uchun hech qanday load topilmadi",
                     "bol_data": {"pickup": "not found", "delivery": "not found"}}
+
+        # 2.5. PO↔RC tekshiruvi uchun har bir load'ning ma'lum referencelarini va
+        # tekshiruv rejimini (strict/presence) hisoblaymiz.
+        if PO_MATCH_ENFORCE:
+            await _attach_references(group_id, loads)
 
         current_loads = [ld for ld in loads if ld.get("isCurrent") is True]
         other_loads = [ld for ld in loads if ld.get("isCurrent") is not True]
@@ -145,6 +207,18 @@ async def check_bol_endpoint(
             "deliveryAddressAddress": _health_field(result.get("deliveryAddressAddress")),
         }
 
+        # Pallet/piece soni: BOL'dagi son RC'dagi bilan solishtiriladi (broker kam yuk
+        # uchun claim qiladi). _health_field'dan farqli default SOG'LOM (N/A) — RC'da
+        # pallet ma'lumoti bo'lmagan (legacy) loadlar qizil bo'lib ketmasin.
+        # isHealthy bool bo'lishi ham shart: present-but-null holatda "none" stringi
+        # backend DTO'siga tushib butun POST'ni 400 qilib yuborishi mumkin edi.
+        _pallet = result.get("palletCount")
+        paperwork_data["palletCount"] = (
+            _pallet
+            if isinstance(_pallet, dict) and isinstance(_pallet.get("isHealthy"), bool)
+            else {"isHealthy": True, "summary": "N/A"}
+        )
+
         # Page count kriteriyasi — hujjatdagi bosilgan "X of Y" bilan haqiqiy sahifa
         # sonini solishtiradi. Keraksiz (truck/trailer/bo'sh) rasmlar realPages'ga
         # kirmaydi; summary'da nechta tashlangani ko'rsatiladi.
@@ -210,6 +284,10 @@ async def check_bol_endpoint(
             "stops": stops,
             "isUsMail": us_mail,
             "isLateSlip": final_late_slip,
+            # POD bosqichi /verify-delivery'ga uzatishi uchun: loadning ma'lum
+            # reference raqamlari va tekshiruv rejimi (PO↔RC tekshiruvi).
+            "references": matched_load.get("references") or [],
+            "poCheckMode": matched_load.get("poCheckMode") or "presence",
         }
 
     except Exception as e:
