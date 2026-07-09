@@ -140,6 +140,10 @@ async def validate_bol_with_loads_gemini(bol_images: list, loads: list) -> dict:
             # ma'lum) — "presence": legacy/email-RC loadlar noto'g'ri qizil bo'lmaydi.
             "references": load.get("references") or ([str(load.get("loadId"))] if load.get("loadId") else []),
             "poCheckMode": load.get("poCheckMode") or "presence",
+            # USPS BOL'da og'irlik BOSILMAYDI — o'rniga necha foiz yuklangani ("100%",
+            # "80%", "65%") ko'rsatiladi. Rejim KODDA hisoblanadi (api.py isUsMail):
+            # "percent" — foiz ham og'irlik o'rnida qabul qilinadi.
+            "weightCheckMode": "percent" if load.get("isUsMail") else "numeric",
             "pickup": pickup_addrs,
             "delivery": delivery_addrs,
             "weight": load.get("weight", ""),
@@ -225,9 +229,18 @@ Also set "matchType" to "number" (matched via a reference number), "lane" (match
 cities only) or "none" (matchedIndex=0).
 
 STEP 3 — Validate matched load fields (each isHealthy is true ONLY per the rule below):
-1. WEIGHT: isHealthy=true if a numeric weight is present and readable on the document. If the
-   matched load also provides a weight, note any large discrepancy in "summary" but do NOT set
-   isHealthy=false on weight alone.
+1. WEIGHT: obey the matched load's "weightCheckMode" field — it alone decides the mode.
+   - "numeric": isHealthy=true if a numeric weight is present and readable on the document. If the
+     matched load also provides a weight, note any large discrepancy in "summary" but do NOT set
+     isHealthy=false on weight alone.
+   - "percent" (USPS/US Mail): USPS documents do NOT print a weight — they print the LOAD
+     PERCENTAGE (how full the trailer is), e.g. "100%", "80%", "65%", often near labels like
+     "% Loaded", "Load %", "Ttl Sq Ft %", "Percent", "Capacity", or a handwritten/circled
+     percentage. If several percentage boxes are printed, report the one that describes this
+     trip's load — prefer a filled/non-zero value over an empty or 0 box.
+     isHealthy=true if such a load percentage OR a numeric weight is readable; put the found
+     value in "summary" (e.g. "Loaded: 80%"). isHealthy=false ONLY when neither a percentage
+     nor a weight is readable anywhere on the document.
 2. SIGNATURE: isHealthy=true ONLY if a handwritten driver/shipper signature or an inked stamp is
    visible. A printed/typed name alone, or an empty signature line, = false.
 {po_rule}

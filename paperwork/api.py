@@ -94,12 +94,7 @@ async def _attach_references(group_id: str, loads: list) -> None:
             _add(detail.get("otherNumber"))
             _add(detail.get("refNumber"))
         ld["references"] = refs
-        try:
-            us_mail = bool(is_us_mail_load(ld))
-        except Exception:
-            us_mail = False
-        ld["isUsMail"] = us_mail
-        ld["poCheckMode"] = "strict" if (len(refs) >= 2 and not us_mail) else "presence"
+        ld["poCheckMode"] = "strict" if (len(refs) >= 2 and not ld.get("isUsMail")) else "presence"
 
     try:
         await asyncio.gather(*[_one(ld) for ld in loads])
@@ -141,6 +136,14 @@ async def check_bol_endpoint(
             await record_paperwork_event(group_id, "no_loads", latency_ms=_lat())
             return {"success": False, "message": "Bu guruh uchun hech qanday load topilmadi",
                     "bol_data": {"pickup": "not found", "delivery": "not found"}}
+
+        # 2.4. US Mail flag — HAR DOIM hisoblanadi (HTTP'siz, arzon): weight tekshiruvi
+        # rejimi (USPS BOL'da og'irlik emas, foiz bosiladi) va PO rejimi shunga qaraydi.
+        for ld in loads:
+            try:
+                ld["isUsMail"] = bool(is_us_mail_load(ld))
+            except Exception:
+                ld["isUsMail"] = False
 
         # 2.5. PO↔RC tekshiruvi uchun har bir load'ning ma'lum referencelarini va
         # tekshiruv rejimini (strict/presence) hisoblaymiz.
