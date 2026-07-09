@@ -102,11 +102,11 @@ async def classify_message(text: str):
 
         If it IS a problem (or an explicit issue report such as "Vehicle Issue", "Delivery Problem", "System Issue", "Safety Concern", "Payment Issue", "HR Question"), reply with the department:
         - "dispatcher": load, route, delivery, detention problems; driver suddenly unavailable (sick, family emergency) so the load must be re-planned
-        - "fleet": vehicle or trailer mechanical problems, breakdowns, maintenance issues
+        - "fleet": vehicle or trailer mechanical problems, breakdowns, maintenance issues; ANY fuel/gas card problem (card lost, stolen, missing, damaged, declined at the pump, not working, needs deactivation or replacement)
         - "safety": accidents, injuries, safety hazards, violations, being pressured to drive beyond legal hours (HOS), cargo or trailer theft / break-in
         - "insurance": insurance claim or coverage problems (a general "how does insurance work / am I covered" question is NOT a problem — that is "chat")
         - "hr": employment problems (conflict, termination, contract)
-        - "accounting": pay, settlement, invoice, billing, fuel card problems
+        - "accounting": pay, settlement, invoice, billing problems — money owed, paid wrong, deductions. The word "card" does NOT mean accounting by itself: fuel/gas card issues belong to "fleet"; accounting only if the complaint is about a CHARGE or STATEMENT being wrong (e.g. double-charged on the card statement)
         - "updater": app, bot, or system technical problems
 
         OVERRIDE: if the message contains "basket" or mentions any fruits or vegetables (e.g. apple, tomato, potato, onion, carrot, meva, sabzavot, olma, pomidor, kartoshka etc.), reply "updater". "Basketball" (basketbol, баскетбол) is a sport, NOT "basket" — it does not trigger this rule.
