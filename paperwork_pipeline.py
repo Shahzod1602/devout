@@ -449,14 +449,12 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 pods_count = await get_pods_count(chat_id, new_load_id)
                 required_pods = await get_delivery_count(chat_id, new_load_id)
 
-                if page_mismatch:
-                    # POD-2: page count muammosida signature/address'ni YASHIL qilib YUBORMAYMIZ.
-                    # Ilgari ular majburan True (yashil "Found"/"Match") qilinardi — imzosiz yoki
-                    # noto'g'ri manzilli POD yashil ko'rinib reviewer tomonidan qabul qilinardi.
-                    # Endi "Not verified" (qizil) + sababi: avval page count'ni to'g'rilash kerak.
-                    address_match = False
-                    pod_valid = False
-                    address_notes = pod_notes = "Not verified — fix page count first"
+                # 2026-07-10 (product): page count BOSHQA kriteriylarga ARALASHMASIN — har
+                # qator mustaqil baholanadi. (Tarix: dastlab mismatch'da signature/address
+                # majburan YASHIL edi — imzosiz POD o'tib ketardi; WAVE-1 buni majburan
+                # QIZIL "fix page count first"ga almashtirgan edi; endi model ko'rgan
+                # sahifalar bo'yicha HAQIQIY natija ko'rsatiladi — imzo ko'rinmasa
+                # signature baribir qizil, mismatch esa faqat "Page count" qatorida.)
 
                 # AskAI note "Error:" bilan boshlansa (raw xato) — do'stona note ko'rsatamiz.
                 if address_notes.startswith("Error:"):
@@ -467,12 +465,11 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 # PO↔RC: askai po_match bool bo'lsa — qat'iy natija (false = POD'dagi
                 # PO/ref RC referencelariga mos emas). Aks holda (references
                 # yuborilmagan / POD'da ref o'qilmadi / eski askai) — N/A degrade,
-                # POD qabul oqimi bloklanmaydi. Page-mismatch'da tahlil ishonchsiz
-                # (yuqoridagi guard bilan bir mantiq) — PO qatorini ham N/A qilamiz,
-                # noto'g'ri "Not in RC" qizili bilan ticket ko'tarmaymiz.
+                # POD qabul oqimi bloklanmaydi. Page-mismatch bu qatorga ham
+                # aralashmaydi (kriteriylar mustaqil, 2026-07-10 product qarori).
                 _po_match = verify_data.get("po_match")
                 _po_notes = str(verify_data.get("po_notes") or "")[:200]
-                if isinstance(_po_match, bool) and not page_mismatch:
+                if isinstance(_po_match, bool):
                     _po_row = {"isHealthy": _po_match, "summary": _po_notes or ("Match" if _po_match else "Not in RC")}
                 else:
                     _po_row = {"isHealthy": True, "summary": "N/A"}
