@@ -547,6 +547,18 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
         return "skipped", f"Unhandled file_type={file_type}", new_load_id
 
     else:
+        # AI band (Vertex 429, retry'lardan keyin ham) — hujjat aybdor emas: driver'ga
+        # tushunarli "birozdan keyin qayta yuboring" deymiz, log-guruhda toza sabab.
+        if check_result.get('retryable'):
+            try:
+                await checking_msg.delete()
+            except Exception:
+                logger.debug("checking_msg delete failed", exc_info=True)
+            await msg.answer(
+                "⏳ The system is busy right now. Please resend the document in a few minutes."
+            )
+            return "skipped", "AI busy (429) — resend requested", None
+
         bol_data = check_result.get('bol_data', {})
         available_loads = check_result.get('available_loads', 0)
         backend_message = check_result.get('message') or ''

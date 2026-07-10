@@ -18,8 +18,13 @@ logger = logging.getLogger(__name__)
 # Google'ning o'z tavsiyasi: 429 da "try again later" — shuning uchun darrov
 # yiqitmasdan, jitter bilan bir necha marta qayta urinamiz. Burst paytida
 # parallel call'lar jitter tufayli yoyilib, daqiqalik limitga bosimni kamaytiradi.
-_QUOTA_MAX_RETRIES = 4          # jami urinishlar (1 asosiy + 3 retry)
-_QUOTA_BACKOFF_BASE = 2.0       # 2s, 4s, 8s (+ 0..1s jitter)
+# 2026-07-10: askai ratecon endi 96-parallel burst qiladi (o'sha Vertex loyihasi) —
+# bot'ning retry oynasi burst oynasidan (~15-30s) UZUNROQ bo'lishi shart, aks holda
+# barcha urinishlar burst ichiga tushib baribir yiqiladi. 6 urinish, cap 15s:
+# kutishlar 2,4,8,15,15 (+jitter) ≈ 44-49s qamrov (pipeline'ning 180s timeout'iga sig'adi).
+_QUOTA_MAX_RETRIES = 6          # jami urinishlar (1 asosiy + 5 retry)
+_QUOTA_BACKOFF_BASE = 2.0       # 2s, 4s, 8s, 15s, 15s (cap) + 0..1s jitter
+_QUOTA_BACKOFF_CAP = 15.0
 
 # Vertex AI (service account) orqali — API key emas, shuning uchun key muddati
 # tugashi muammosi yo'q. Credential `GOOGLE_APPLICATION_CREDENTIALS` orqali.
@@ -56,12 +61,15 @@ def parse_gemini_json(raw: str) -> dict:
     return json.loads(raw)
 
 
-def _is_quota_error(exc: Exception) -> bool:
+def is_quota_error(exc: Exception) -> bool:
     """429 / RESOURCE_EXHAUSTED (Vertex kvota) xatosini aniqlash."""
     if isinstance(exc, genai_errors.APIError) and getattr(exc, "code", None) == 429:
         return True
     text = str(exc)
     return "RESOURCE_EXHAUSTED" in text or "429" in text
+
+
+_is_quota_error = is_quota_error  # ichki nom saqlanadi (mavjud chaqiruvlar uchun)
 
 
 async def _generate_with_backoff(text_prompt: str, image_parts: list):
@@ -95,7 +103,7 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
             latency_ms = int((time.time() - call_start) * 1000)
             await record_gemini_call(GEMINI_BOT_MODEL, response, latency_ms, success=False)
             if _is_quota_error(exc) and quota_retry < _QUOTA_MAX_RETRIES - 1:
-                delay = _QUOTA_BACKOFF_BASE * (2 ** quota_retry) + random.uniform(0, 1)
+                delay = min(_QUOTA_BACKOFF_BASE * (2 ** quota_retry), _QUOTA_BACKOFF_CAP) + random.uniform(0, 1)
                 logger.warning(
                     "⏳ Gemini 429 RESOURCE_EXHAUSTED — backoff %.1fs (urinish %d/%d)",
                     delay, quota_retry + 1, _QUOTA_MAX_RETRIES,

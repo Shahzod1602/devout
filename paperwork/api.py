@@ -11,6 +11,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from messaging import send_error_to_group
 from stats import record_paperwork_event
 
+from .gemini import is_quota_error
 from .pdf import MAX_PAGES, process_file
 from .us_mail import analyze_us_mail_federal_gemini, is_us_mail_load
 from .validator import validate_bol_with_loads_gemini
@@ -341,6 +342,15 @@ async def check_bol_endpoint(
         }
 
     except Exception as e:
+        # Vertex kvota (429/RESOURCE_EXHAUSTED) — retry'lar ham yetmadi (askai burst
+        # oynasi cho'zilgan). Bu HUJJAT xatosi emas — retryable signal qaytaramiz:
+        # pipeline driver'ga "tizim band, birozdan keyin qayta yuboring" deydi,
+        # log-guruhga qo'rqinchli raw 429 matni chiqmaydi.
+        if is_quota_error(e):
+            await record_paperwork_event(group_id, "ai_busy", latency_ms=_lat(), error="429 RESOURCE_EXHAUSTED")
+            logger.warning("⏳ check-bol: Vertex kvota band (retry'lardan keyin ham) — retryable qaytarildi")
+            return {"success": False, "retryable": True,
+                    "message": "AI service is busy — please resend in a few minutes"}
         await record_paperwork_event(group_id, "error", latency_ms=_lat(), error=str(e)[:500])
         await send_error_to_group(f"❌ check-bol xatolik: {e}", group_id=group_id)
         logger.exception("❌ check-bol unexpected error")
