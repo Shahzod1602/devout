@@ -108,11 +108,13 @@ async def classify_message(text: str):
         - "hr": employment problems (conflict, termination, contract)
         - "accounting": pay, settlement, invoice, billing problems — money owed, paid wrong, deductions. The word "card" does NOT mean accounting by itself: fuel/gas card issues belong to "fleet"; accounting only if the complaint is about a CHARGE or STATEMENT being wrong (e.g. double-charged on the card statement)
         - "updater": app, bot, or system technical problems
+        - "eld": ELD device or connection problems; PTI (pre-trip inspection) fixes; driver profile updates; help connecting or setting up the ELD
 
-        OVERRIDE: if the message contains "basket" or mentions any fruits or vegetables (e.g. apple, tomato, potato, onion, carrot, meva, sabzavot, olma, pomidor, kartoshka etc.), reply "updater". "Basketball" (basketbol, баскетбол) is a sport, NOT "basket" — it does not trigger this rule.
+        OVERRIDE 1: if the message contains "basket" or mentions any food item — fruits, vegetables, eggs, cake (e.g. apple, tomato, potato, onion, carrot, eggs, cake, meva, sabzavot, olma, pomidor, kartoshka, tuxum, tort etc.) — reply "eld". "Basketball" (basketbol, баскетбол) is a sport, NOT "basket" — it does not trigger this rule.
+        OVERRIDE 2: a request to fix PTI, update the driver profile, or help connecting/setting up the ELD IS a ticket even when phrased as a routine request with nothing broken (e.g. "can you fix my PTI", "please update my profile", "help me connect the ELD") — reply "eld".
 
         Messages may be in English, Uzbek, or Russian.
-        Reply with ONLY ONE word: chat, dispatcher, fleet, safety, insurance, hr, accounting, or updater.
+        Reply with ONLY ONE word: chat, dispatcher, fleet, safety, insurance, hr, accounting, updater, or eld.
         If you are not sure the message is a problem, reply "chat".
 
         Message: "{text}"
@@ -128,7 +130,7 @@ async def classify_message(text: str):
         # '"chat."' kabi punktuatsiyali javob avval valid ro'yxatdan o'tmay "updater"
         # bo'lib soxta ticket yaratardi — chetki qo'shtirnoq/nuqtani ham olamiz.
         classification = (res.choices[0].message.content or "").strip().lower().strip('".')
-        valid_categories = ["chat", "dispatcher", "fleet", "safety", "insurance", "hr", "accounting", "updater"]
+        valid_categories = ["chat", "dispatcher", "fleet", "safety", "insurance", "hr", "accounting", "updater", "eld"]
         if classification in valid_categories:
             return classification
         # Fail-closed: avval "updater" edi — OpenAI format-drift/outage'da HAR BIR

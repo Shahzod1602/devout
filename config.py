@@ -145,7 +145,8 @@ DEFAULT_QUICK_BUTTONS = [
 ]
 
 # === Domain mappings ===
-DEPARTMENT_MAP = {"fleet": 0, "updater": 1, "dispatcher": 2, "insurance": 3, "safety": 4, "hr": 5, "accounting": 6}
+# Backend Department enum bilan sinxron (updater-agent Department.cs): ELD = 7 (2026-07-10 qo'shilgan).
+DEPARTMENT_MAP = {"fleet": 0, "updater": 1, "dispatcher": 2, "insurance": 3, "safety": 4, "hr": 5, "accounting": 6, "eld": 7}
 PRIORITY_MAP = {"high": 0, "medium": 1, "low": 2}
 STATUS_TODO = 0
 

@@ -756,13 +756,14 @@ async def generic_text_handler(msg: types.Message):
             groupName=chat_name,
             writerName=msg.from_user.full_name,
             writerId=msg.from_user.id,
-            department="updater",
+            # 2026-07-10: basket/oziq-ovqat kod-so'zlari endi ELD departmentga (avval updater).
+            department="eld",
             text=text_summary,
             message_link=message_link,
             priority=priority,
         )
         if ok:
-            logger.info("✅ Basket ticket sent to updater department")
+            logger.info("✅ Basket ticket sent to ELD department")
         await msg.answer("🔍 Checking...")
         return
 
