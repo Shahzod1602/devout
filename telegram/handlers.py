@@ -900,6 +900,13 @@ async def paperwork_accept_callback(callback: types.CallbackQuery):
     issue_id = callback.data.removeprefix("pw_accept_")
     chat_id = callback.message.chat.id
     user_name = callback.from_user.full_name or "user"
+
+    # Driver (setdriver/teamdriver) paperwork qarorini BOSOLMAYDI — qaror updater'niki.
+    if is_any_driver(chat_id, callback.from_user.id):
+        await callback.answer("Please wait for the Updater response", show_alert=True)
+        logger.info("🚫 pw_accept %s: driver %s bosdi — rad etildi (guruh %s)", issue_id, user_name, chat_id)
+        return
+
     reason = (
         "Accepted by updater in the internal team group."
         if is_internal_group(chat_id)
@@ -950,6 +957,12 @@ async def paperwork_resend_callback(callback: types.CallbackQuery):
     issue_id = callback.data.removeprefix("pw_resend_")
     chat_id = callback.message.chat.id
     user_name = callback.from_user.full_name or "user"
+
+    # Driver (setdriver/teamdriver) paperwork qarorini BOSOLMAYDI — qaror updater'niki.
+    if is_any_driver(chat_id, callback.from_user.id):
+        await callback.answer("Please wait for the Updater response", show_alert=True)
+        logger.info("🚫 pw_resend %s: driver %s bosdi — rad etildi (guruh %s)", issue_id, user_name, chat_id)
+        return
 
     token = await get_api_token()
     if not token:
