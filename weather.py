@@ -81,7 +81,7 @@ async def _nws_weather(lat: float, lon: float) -> str | None:
             rel = ((props.get("relativeLocation") or {}).get("properties")) or {}
             place = ", ".join(x for x in (rel.get("city"), rel.get("state")) if x) or f"{lat:.2f},{lon:.2f}"
 
-            periods = []
+            periods: list[dict] = []
             if forecast_url:
                 fr = await client.get(forecast_url)
                 if fr.status_code == 200:
