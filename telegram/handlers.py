@@ -68,6 +68,7 @@ from tickets import (
     send_to_swagger,
 )
 from ui import build_quickbuttons_keyboard, get_quickbuttons
+from weather import get_weather_reply
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -723,6 +724,18 @@ async def generic_text_handler(msg: types.Message):
     if registered is None:
         # G1×CMD-2: transient backend outage (retry'lardan keyin ham noaniq) — valid guruhni
         # de-register QILMAYMIZ (state saqlanadi), faqat shu xabarni jimgina o'tkazamiz.
+        return
+
+    # ====== Weather-on-reply ======
+    # Update xabariga ("Current location: ..." qatori bor) reply + "weather" so'zi
+    # (yoki /weather) → o'sha manzil uchun NWS ob-havo + alertlar. Deterministik
+    # trigger — oddiy reply-suhbatlar ticket/classify oqimiga tegmaydi.
+    if msg.reply_to_message and re.search(r"\bweather\b", text.lower()):
+        replied_text = msg.reply_to_message.text or msg.reply_to_message.caption or ""
+        try:
+            await msg.answer(await get_weather_reply(replied_text))
+        except Exception:
+            logger.exception("❌ weather reply xatosi")
         return
 
     # Internal team: classify / history-API / basket / ticket pipeline kerak emas.
