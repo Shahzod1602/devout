@@ -128,6 +128,11 @@ PO_MATCH_ENFORCE = os.environ.get("PO_MATCH_ENFORCE", "1").strip() == "1"
 # ko'rsatiladi, qabul eski tartibda davom etadi (kill-switch).
 PAGE_COUNT_ENFORCE = os.environ.get("PAGE_COUNT_ENFORCE", "1").strip() == "1"
 
+# === Admin panel ===
+# ADMIN_TOKEN — /admin panelining kirish kaliti. O'rnatilmagan bo'lsa panel
+# BUTUNLAY O'CHIQ (503) — audit H1 (authsiz control-plane) takrorlanmasin.
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
+
 # === API login credentials ===
 LOGIN_CREDENTIALS = {
     "email": _require_env("LOGIN_EMAIL"),

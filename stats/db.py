@@ -48,6 +48,21 @@ async def init_stats_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_gemini_endpoint ON gemini_calls(endpoint);
             CREATE INDEX IF NOT EXISTS idx_gemini_model ON gemini_calls(model);
 
+            CREATE TABLE IF NOT EXISTS checkin_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                group_id TEXT,
+                load_id TEXT,
+                doc_type TEXT,
+                result TEXT NOT NULL,
+                checkin_raw TEXT,
+                checkout_raw TEXT,
+                tz_enum INTEGER,
+                error TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_ci_ts ON checkin_events(ts);
+            CREATE INDEX IF NOT EXISTS idx_ci_result ON checkin_events(result);
+
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
         """)
@@ -56,6 +71,7 @@ async def init_stats_db() -> None:
         try:
             await db.execute("DELETE FROM paperwork_events WHERE ts < ?", (_cutoff,))
             await db.execute("DELETE FROM gemini_calls WHERE ts < ?", (_cutoff,))
+            await db.execute("DELETE FROM checkin_events WHERE ts < ?", (_cutoff,))
         except Exception:
             logger.warning("stats retention prune failed", exc_info=True)
         await db.commit()

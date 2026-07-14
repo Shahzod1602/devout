@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Dispatch Console</title>
+<style>
+/* ============ FREIGHT DISPATCH CONSOLE ============
+   Qorong'i asfalt + amber LED. CDN yo'q, hammasi shu faylda. */
+:root{
+  --asphalt:#131311; --panel:#1a1a19; --panel-2:#202020; --line:#2e2d2a;
+  --ink:#f2f0e9; --ink-2:#c3c2b7; --ink-3:#8a887c;
+  --amber:#ffb020; --amber-dim:#c98500;
+  --s-blue:#3987e5; --s-aqua:#199e70; --s-yellow:#c98500; --s-red:#e66767; --s-violet:#9085e9;
+  --ok:#199e70; --bad:#e66767; --warn:#c98500;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --cond:'Avenir Next Condensed','Arial Narrow','Helvetica Neue',Arial,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(1200px 500px at 70% -10%, rgba(255,176,32,.05), transparent 60%),
+    var(--asphalt);
+  color:var(--ink); font:14px/1.45 var(--mono);
+}
+/* grain */
+body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.05;
+  background-image:repeating-conic-gradient(#000 0 25%, transparent 0 50%);
+  background-size:3px 3px; mix-blend-mode:overlay}
+.hazard{height:6px;background:repeating-linear-gradient(-45deg,var(--amber-dim) 0 14px,#0d0d0c 14px 28px);opacity:.75}
+
+h1,h2,.rail button,.chip,.tile .k,th{font-family:var(--cond);text-transform:uppercase;letter-spacing:.14em}
+a{color:var(--amber)}
+
+/* ---------- login gate ---------- */
+#login{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0}
+#login .gate{width:min(430px,92vw);border:1px solid var(--line);background:var(--panel);padding:38px 34px;position:relative}
+#login .gate::before,#login .gate::after{content:"";position:absolute;width:14px;height:14px;border:2px solid var(--amber-dim)}
+#login .gate::before{top:-2px;left:-2px;border-right:0;border-bottom:0}
+#login .gate::after{bottom:-2px;right:-2px;border-left:0;border-top:0}
+#login h1{font-size:30px;letter-spacing:.2em;color:var(--ink)}
+#login .sub{color:var(--ink-3);margin:6px 0 26px;font-size:12px}
+#login input{width:100%;background:#0e0e0d;border:1px solid var(--line);color:var(--ink);padding:12px 14px;font:15px var(--mono);letter-spacing:.08em}
+#login input:focus{outline:2px solid var(--amber-dim);border-color:transparent}
+#login button{width:100%;margin-top:14px;padding:12px;background:var(--amber-dim);color:#0d0d0c;border:0;font:700 15px var(--cond);text-transform:uppercase;letter-spacing:.2em;cursor:pointer}
+#login button:hover{background:var(--amber)}
+#login .err{color:var(--bad);margin-top:12px;font-size:12px;min-height:16px}
+
+/* ---------- app frame ---------- */
+#app{display:none;min-height:100vh}
+header{display:flex;align-items:center;gap:18px;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:19px;letter-spacing:.22em}
+.env{padding:3px 10px;font:700 12px var(--cond);letter-spacing:.18em;text-transform:uppercase}
+.env.test{background:var(--amber-dim);color:#0d0d0c}
+.env.prod{background:var(--bad);color:#0d0d0c}
+.pulse{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(25,158,112,.6);animation:pl 2s infinite}
+.pulse.stale{background:var(--warn);animation:none}
+@keyframes pl{70%{box-shadow:0 0 0 9px rgba(25,158,112,0)}100%{box-shadow:0 0 0 0 rgba(25,158,112,0)}}
+header .meta{margin-left:auto;display:flex;gap:18px;color:var(--ink-3);font-size:12px}
+header .meta b{color:var(--ink-2);font-weight:400}
+#logout{background:none;border:1px solid var(--line);color:var(--ink-3);padding:4px 12px;cursor:pointer;font:12px var(--cond);letter-spacing:.15em;text-transform:uppercase}
+#logout:hover{color:var(--ink);border-color:var(--ink-3)}
+
+.frame{display:grid;grid-template-columns:196px 1fr;min-height:calc(100vh - 63px)}
+.rail{border-right:1px solid var(--line);padding:18px 0;background:var(--panel)}
+.rail button{display:block;width:100%;text-align:left;padding:11px 22px;background:none;border:0;border-left:3px solid transparent;color:var(--ink-3);font-size:13px;cursor:pointer}
+.rail button:hover{color:var(--ink)}
+.rail button.on{color:var(--amber);border-left-color:var(--amber)}
+main{padding:22px;overflow-x:hidden}
+section{display:none}section.on{display:block}
+h2{font-size:15px;color:var(--ink-2);margin:22px 0 10px;letter-spacing:.18em}
+h2:first-child{margin-top:0}
+
+/* ---------- tiles ---------- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.tile{border:1px solid var(--line);background:var(--panel);padding:12px 14px;position:relative}
+.tile::before{content:"";position:absolute;top:-1px;left:-1px;width:8px;height:8px;border-top:2px solid var(--amber-dim);border-left:2px solid var(--amber-dim)}
+.tile .k{font-size:11px;color:var(--ink-3);margin-bottom:5px}
+.tile .v{font-size:22px;font-variant-numeric:tabular-nums;color:var(--ink)}
+.tile .v small{font-size:12px;color:var(--ink-3)}
+.tile.bad .v{color:var(--bad)} .tile.ok .v{color:var(--ok)} .tile.warn .v{color:var(--warn)}
+
+.chip{display:inline-block;padding:1px 8px;font-size:11px;border:1px solid var(--line);color:var(--ink-2)}
+.chip.ok{color:var(--ok);border-color:var(--ok)}
+.chip.bad{color:var(--bad);border-color:var(--bad)}
+.chip.warn{color:var(--warn);border-color:var(--warn)}
+.chip.dim{color:var(--ink-3)}
+
+/* ---------- charts ---------- */
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.chart{border:1px solid var(--line);background:var(--panel);padding:12px 14px}
+.chart .t{font:12px var(--cond);letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px;display:flex;gap:14px;align-items:center}
+.lg{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-2);text-transform:none;letter-spacing:0;font-family:var(--mono)}
+.lg i{width:9px;height:9px;display:inline-block}
+svg text{font:10px var(--mono);fill:var(--ink-3)}
+svg .lbl{fill:var(--ink-2)}
+rect.bar:hover{opacity:.8}
+
+/* ---------- log console ---------- */
+.bar-row{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
+.bar-row input[type=text]{background:#0e0e0d;border:1px solid var(--line);color:var(--ink);padding:7px 10px;font:13px var(--mono);flex:1;min-width:160px}
+.bar-row .fbtn{background:none;border:1px solid var(--line);color:var(--ink-3);padding:6px 12px;cursor:pointer;font:12px var(--cond);letter-spacing:.12em;text-transform:uppercase}
+.bar-row .fbtn.on{color:var(--amber);border-color:var(--amber-dim)}
+#logbox{border:1px solid var(--line);background:#0e0e0d;height:60vh;overflow-y:auto;padding:10px 12px;font-size:12.5px}
+.lg-line{padding:1.5px 0;display:grid;grid-template-columns:58px 62px 150px 1fr;gap:10px;border-bottom:1px dotted #1e1e1c}
+.lg-line .ts{color:var(--ink-3)}
+.lg-line .lv{font-weight:700}
+.lv.INFO{color:var(--s-blue)} .lv.WARNING{color:var(--warn)} .lv.ERROR,.lv.CRITICAL{color:var(--bad)} .lv.DEBUG{color:var(--ink-3)}
+.lg-line .lo{color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lg-line .m{white-space:pre-wrap;word-break:break-word;color:var(--ink-2)}
+.lg-line .m .exc{color:var(--bad);display:block;font-size:11px}
+
+/* ---------- tables ---------- */
+.twrap{border:1px solid var(--line);overflow-x:auto;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th{position:sticky;top:0;background:var(--panel-2);color:var(--ink-3);font-size:11px;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:6px 10px;border-bottom:1px solid #232320;color:var(--ink-2);font-variant-numeric:tabular-nums;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+tr:hover td{background:#1f1f1d}
+td.num{text-align:right}
+select{background:#0e0e0d;border:1px solid var(--line);color:var(--ink);padding:7px 10px;font:13px var(--mono)}
+.pager{display:flex;gap:8px;align-items:center;margin-top:10px;color:var(--ink-3);font-size:12px}
+.pager button{background:none;border:1px solid var(--line);color:var(--ink-2);padding:5px 12px;cursor:pointer}
+.pager button:disabled{opacity:.35;cursor:default}
+
+/* ---------- state cards ---------- */
+.stategrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+details.st{border:1px solid var(--line);background:var(--panel);padding:10px 14px}
+details.st summary{cursor:pointer;display:flex;justify-content:space-between;color:var(--ink-2);list-style:none}
+details.st summary::-webkit-details-marker{display:none}
+details.st .sz{color:var(--amber);font-variant-numeric:tabular-nums}
+details.st pre{margin-top:8px;font-size:11px;color:var(--ink-3);white-space:pre-wrap;word-break:break-all;max-height:220px;overflow-y:auto}
+.mut{color:var(--ink-3);font-size:12px}
+@media(max-width:760px){.frame{grid-template-columns:1fr}.rail{display:flex;overflow-x:auto;padding:0}.rail button{white-space:nowrap;border-left:0;border-bottom:3px solid transparent}.rail button.on{border-bottom-color:var(--amber)}}
+</style>
+</head>
+<body>
+
+<!-- ======== LOGIN GATE ======== -->
+<div id="login">
+  <div class="gate">
+    <h1>Dispatch Console</h1>
+    <div class="sub" id="login-sub">updater bot — kuzatuv paneli</div>
+    <input id="tok" type="password" placeholder="ADMIN TOKEN" autocomplete="current-password">
+    <button id="enter">Kirish</button>
+    <div class="err" id="login-err"></div>
+  </div>
+</div>
+
+<!-- ======== APP ======== -->
+<div id="app">
+  <header>
+    <h1>Dispatch Console</h1>
+    <span class="env test" id="envb">…</span>
+    <span class="pulse" id="pulse" title="oxirgi log yoshi"></span>
+    <div class="meta">
+      <span>uptime <b id="upt">—</b></span>
+      <span>queue <b id="qd">—</b></span>
+      <span>xato/1s <b id="e1h">—</b></span>
+      <button id="logout">Chiqish</button>
+    </div>
+  </header>
+  <div class="hazard"></div>
+  <div class="frame">
+    <nav class="rail">
+      <button data-v="overview" class="on">Umumiy</button>
+      <button data-v="logs">Jonli oqim</button>
+      <button data-v="checkin">Check-in</button>
+      <button data-v="groups">Guruhlar</button>
+      <button data-v="db">DB brauzer</button>
+      <button data-v="state">State</button>
+    </nav>
+    <main>
+
+      <section id="v-overview" class="on">
+        <h2>Bugun (24 soat)</h2>
+        <div class="tiles" id="t-today"></div>
+        <h2>Tizim</h2>
+        <div class="tiles" id="t-sys"></div>
+        <h2>Baza / Provayderlar / Flaglar</h2>
+        <div class="tiles" id="t-db"></div>
+        <h2>7 kunlik oqim</h2>
+        <div class="charts">
+          <div class="chart"><div class="t">Check-in/out <span class="lg"><i style="background:var(--s-aqua)"></i>sent</span><span class="lg"><i style="background:var(--s-yellow)"></i>rad</span><span class="lg"><i style="background:var(--s-red)"></i>xato</span></div><div id="ch-checkin"></div></div>
+          <div class="chart"><div class="t">Paperwork <span class="lg"><i style="background:var(--s-aqua)"></i>matched</span><span class="lg"><i style="background:var(--s-red)"></i>boshqa</span></div><div id="ch-pw"></div></div>
+          <div class="chart"><div class="t">Gemini xarajat, $ <span class="lg"><i style="background:var(--s-blue)"></i>kunlik</span></div><div id="ch-cost"></div></div>
+        </div>
+      </section>
+
+      <section id="v-logs">
+        <div class="bar-row">
+          <button class="fbtn on" data-lv="">Hammasi</button>
+          <button class="fbtn" data-lv="INFO">Info</button>
+          <button class="fbtn" data-lv="WARNING">Warn</button>
+          <button class="fbtn" data-lv="ERROR">Error</button>
+          <input type="text" id="logq" placeholder="qidiruv (msg yoki logger)…">
+          <button class="fbtn on" id="follow">● Follow</button>
+        </div>
+        <div id="logbox"></div>
+      </section>
+
+      <section id="v-checkin">
+        <h2>24 soat</h2>
+        <div class="tiles" id="t-ci"></div>
+        <h2>Oxirgi urinishlar</h2>
+        <div class="twrap"><table id="tb-ci"><thead><tr>
+          <th>Vaqt</th><th>Guruh</th><th>Load</th><th>Tur</th><th>Natija</th><th>In (xom)</th><th>Out (xom)</th><th>TZ</th><th>Xato</th>
+        </tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="v-groups">
+        <div class="bar-row"><input type="text" id="gq" placeholder="guruh / driver qidiruv…"><span class="mut" id="gcount"></span></div>
+        <div class="twrap"><table id="tb-g"><thead><tr>
+          <th>Guruh</th><th>Driver</th><th>Team</th><th>Loads</th><th>Holat</th><th>Ticket</th><th>Oxirgi msg</th><th>Yangilangan</th>
+        </tr></thead><tbody></tbody></table></div>
+      </section>
+
+      <section id="v-db">
+        <div class="bar-row">
+          <select id="dbsel"></select>
+          <input type="text" id="dbq" placeholder="qidiruv (hamma ustunda)…">
+          <span class="mut" id="dbinfo"></span>
+        </div>
+        <div class="twrap"><table id="tb-db"><thead></thead><tbody></tbody></table></div>
+        <div class="pager">
+          <button id="pprev">←</button><span id="ppos">0–0</span><button id="pnext">→</button>
+        </div>
+      </section>
+
+      <section id="v-state">
+        <p class="mut" style="margin-bottom:10px">Xotiradagi tuzilmalar — o'lcham va namuna (birinchi 20 ta yozuv).</p>
+        <div class="stategrid" id="stgrid"></div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtDur=s=>{s=Math.floor(s);const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}k ${h}s`:h?`${h}s ${m}d`:`${m}d ${s%60}s`};
+const fmtTs=t=>{const d=new Date(t*1000);return d.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit"})+" "+d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit",second:"2-digit"})};
+const rel=t=>{const a=Date.now()/1000-t;return a<60?`${Math.floor(a)}s`:a<3600?`${Math.floor(a/60)}d`:a<86400?`${Math.floor(a/3600)}s`:`${Math.floor(a/86400)}k`};
+const TZN={0:"EST",1:"CST",2:"MST",3:"PST"};
+
+async function api(path){
+  const r=await fetch(path,{cache:"no-store"});
+  if(r.status===401){showLogin();throw new Error("401")}
+  if(!r.ok)throw new Error(r.status+" "+await r.text().catch(()=>""));
+  return r.json();
+}
+
+/* ---------- auth ---------- */
+function showLogin(msg){$("#login").style.display="flex";$("#app").style.display="none";if(msg)$("#login-err").textContent=msg}
+function showApp(){$("#login").style.display="none";$("#app").style.display="block"}
+$("#enter").onclick=login; $("#tok").addEventListener("keydown",e=>{if(e.key==="Enter")login()});
+async function login(){
+  $("#login-err").textContent="";
+  const r=await fetch("/admin/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:$("#tok").value})});
+  if(r.ok){$("#tok").value="";boot()}
+  else $("#login-err").textContent=r.status===429?"Ko'p urinish — 60s kuting":r.status===503?"ADMIN_TOKEN o'rnatilmagan (panel o'chiq)":"Noto'g'ri token";
+}
+$("#logout").onclick=async()=>{await fetch("/admin/api/logout",{method:"POST"});showLogin()};
+
+/* ---------- nav ---------- */
+$$(".rail button").forEach(b=>b.onclick=()=>{
+  $$(".rail button").forEach(x=>x.classList.toggle("on",x===b));
+  $$("main section").forEach(s=>s.classList.toggle("on",s.id==="v-"+b.dataset.v));
+  load(b.dataset.v);
+});
+const cur=()=>document.querySelector(".rail button.on")?.dataset.v;
+
+/* ---------- overview ---------- */
+const tile=(k,v,cls="",sub="")=>`<div class="tile ${cls}"><div class="k">${k}</div><div class="v">${v}${sub?` <small>${sub}</small>`:""}</div></div>`;
+async function loadOverview(){
+  const o=await api("/admin/api/overview");
+  $("#envb").textContent=o.env; $("#envb").className="env "+(String(o.env).includes("prod")?"prod":"test");
+  $("#upt").textContent=fmtDur(o.uptime_s);
+  $("#qd").textContent=o.queues.message_queue+"/"+o.queues.message_queue_max;
+  $("#e1h").textContent=o.health.errors_1h;
+  $("#pulse").className="pulse"+((o.health.last_log_age_s??9999)>600?" stale":"");
+  const t=o.today;
+  $("#t-today").innerHTML=
+    tile("Check-in yuborildi",t.checkin_sent,"ok")+
+    tile("Check-in jami",t.checkin_total)+
+    tile("Paperwork matched",t.paperwork_matched,"ok")+
+    tile("Paperwork jami",t.paperwork_total)+
+    tile("Gemini chaqiruv",t.gemini_calls)+
+    tile("Gemini xarajat","$"+t.gemini_cost_usd);
+  $("#t-sys").innerHTML=
+    tile("Uptime",fmtDur(o.uptime_s))+
+    tile("Msg queue",o.queues.message_queue,o.queues.message_queue>1500?"bad":"","/ "+o.queues.message_queue_max)+
+    tile("Failed msgs",o.queues.failed_messages,o.queues.failed_messages>0?"warn":"ok")+
+    tile("Xato / 1 soat",o.health.errors_1h,o.health.errors_1h>0?"bad":"ok")+
+    tile("Warn / 1 soat",o.health.warnings_1h,o.health.warnings_1h>5?"warn":"")+
+    tile("Async tasklar",o.health.asyncio_tasks)+
+    tile("Oxirgi log",o.health.last_log_age_s==null?"—":o.health.last_log_age_s+"s","","oldin");
+  const p=o.providers,f=o.flags;
+  $("#t-db").innerHTML=
+    tile("Guruhlar",o.counts.groups)+
+    tile("Loads (kesh)",o.counts.loads)+
+    tile("BOL / POD",o.counts.bols+" / "+o.counts.pods)+
+    tile("Kompaniyalar",o.counts.companies)+
+    tile("Groq",p.groq?"ON":"OFF",p.groq?"ok":"bad")+
+    tile("Cerebras",p.cerebras?"ON":"OFF",p.cerebras?"ok":"warn")+
+    tile("Gemini",p.gemini_model.replace("gemini-",""),"", (p.vertex_project||""))+
+    tile("PO enforce",f.PO_MATCH_ENFORCE?"ON":"OFF",f.PO_MATCH_ENFORCE?"ok":"warn")+
+    tile("Page enforce",f.PAGE_COUNT_ENFORCE?"ON":"OFF",f.PAGE_COUNT_ENFORCE?"ok":"warn");
+}
+
+/* ---------- SVG stacked daily bars (dataviz: 2px gaps, thin marks, direct total labels) ---------- */
+function stackChart(el,buckets,keys,colors,valFmt){
+  const W=560,H=150,P={l:8,r:8,t:16,b:18};
+  if(!buckets.length){el.innerHTML='<p class="mut">maʼlumot yoʻq</p>';return}
+  const days=buckets, n=days.length;
+  const bw=Math.min(46,(W-P.l-P.r)/n-6);
+  const max=Math.max(...days.map(d=>keys.reduce((a,k)=>a+(d[k]||0),0)),1);
+  let s=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  days.forEach((d,i)=>{
+    const x=P.l+(W-P.l-P.r)*(i+.5)/n-bw/2;
+    let y=H-P.b, tot=keys.reduce((a,k)=>a+(d[k]||0),0);
+    keys.forEach((k,ki)=>{
+      const v=d[k]||0; if(!v)return;
+      const h=Math.max(1,(H-P.t-P.b)*v/max);
+      y-=h;
+      s+=`<rect class="bar" x="${x}" y="${y}" width="${bw}" height="${Math.max(0,h-2)}" fill="${colors[ki]}" rx="1.5"><title>${new Date(d.ts*1000).toLocaleDateString("en-GB")} — ${k}: ${v}</title></rect>`;
+    });
+    if(tot)s+=`<text class="lbl" x="${x+bw/2}" y="${y-4}" text-anchor="middle">${valFmt?valFmt(tot):tot}</text>`;
+    const dt=new Date(d.ts*1000);
+    s+=`<text x="${x+bw/2}" y="${H-5}" text-anchor="middle">${String(dt.getDate()).padStart(2,"0")}/${String(dt.getMonth()+1).padStart(2,"0")}</text>`;
+  });
+  el.innerHTML=s+"</svg>";
+}
+async function loadCharts(){
+  const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const ci=await api("/admin/api/checkin/timeseries?range=7d");
+  stackChart($("#ch-checkin"),ci.series,["sent","rejected","failed"],[css("--s-aqua"),css("--s-yellow"),css("--s-red")]);
+  const pw=await api("/stats/paperwork/timeseries?range=7d");
+  const pws=pw.series.map(b=>({ts:b.ts,matched:b.matched,other:(b.no_match||0)+(b.not_bol||0)+(b.error||0)+(b.no_loads||0)}));
+  stackChart($("#ch-pw"),pws,["matched","other"],[css("--s-aqua"),css("--s-red")]);
+  const gm=await api("/stats/gemini/timeseries?range=7d");
+  const gs=(gm.series||[]).map(b=>({ts:b.ts,cost:+(b.cost_usd||b.cost||0)}));
+  stackChart($("#ch-cost"),gs,["cost"],[css("--s-blue")],v=>"$"+v.toFixed(2));
+}
+
+/* ---------- logs ---------- */
+let afterId=0,lvFilter="",follow=true;
+$$("#v-logs .fbtn[data-lv]").forEach(b=>b.onclick=()=>{
+  $$("#v-logs .fbtn[data-lv]").forEach(x=>x.classList.toggle("on",x===b));
+  lvFilter=b.dataset.lv;afterId=0;$("#logbox").innerHTML="";loadLogs();
+});
+$("#follow").onclick=()=>{follow=!follow;$("#follow").classList.toggle("on",follow)};
+let logqT;$("#logq").addEventListener("input",()=>{clearTimeout(logqT);logqT=setTimeout(()=>{afterId=0;$("#logbox").innerHTML="";loadLogs()},350)});
+async function loadLogs(){
+  const q=encodeURIComponent($("#logq").value||"");
+  const d=await api(`/admin/api/logs?after_id=${afterId}&level=${lvFilter}&q=${q}&limit=400`);
+  if(!d.items.length)return;
+  afterId=Math.max(afterId,...d.items.map(i=>i.id));
+  const box=$("#logbox");
+  box.insertAdjacentHTML("beforeend",d.items.map(i=>
+    `<div class="lg-line"><span class="ts">${new Date(i.ts*1000).toLocaleTimeString("en-GB")}</span><span class="lv ${i.level}">${i.level}</span><span class="lo">${esc(i.logger)}</span><span class="m">${esc(i.msg)}${i.exc?`<span class="exc">${esc(i.exc)}</span>`:""}</span></div>`).join(""));
+  while(box.children.length>1500)box.removeChild(box.firstChild);
+  if(follow)box.scrollTop=box.scrollHeight;
+}
+
+/* ---------- checkin ---------- */
+async function loadCheckin(){
+  const s=await api("/admin/api/checkin/summary?range=24h");
+  const br=s.by_result||{};
+  $("#t-ci").innerHTML=
+    tile("Yuborildi",br.sent||0,"ok")+
+    tile("Vaqt o'qilmadi",br.invalid_time||0,(br.invalid_time)?"warn":"")+
+    tile("Vaqt yetishmadi",br.missing_time||0,(br.missing_time)?"warn":"")+
+    tile("Backend xato",br.backend_error||0,(br.backend_error)?"bad":"")+
+    tile("Server down",br.server_down||0,(br.server_down)?"bad":"")+
+    tile("Jami",s.total);
+  const r=await api("/admin/api/checkin/recent?limit=100");
+  const chip=v=>({sent:"ok",invalid_time:"warn",missing_time:"warn",backend_error:"bad",server_down:"bad",no_permission:"dim"}[v]||"dim");
+  $("#tb-ci tbody").innerHTML=r.items.map(i=>
+    `<tr><td title="${fmtTs(i.ts)}">${rel(i.ts)} oldin</td><td>${esc(i.group_id)}</td><td>${esc(i.load_id)}</td><td>${esc(i.doc_type||"")}</td>`+
+    `<td><span class="chip ${chip(i.result)}">${esc(i.result)}</span></td>`+
+    `<td>${esc(i.checkin_raw)}</td><td>${esc(i.checkout_raw)}</td><td>${i.tz_enum==null?"":TZN[i.tz_enum]??i.tz_enum}</td><td title="${esc(i.error)}">${esc((i.error||"").slice(0,40))}</td></tr>`).join("")
+    ||'<tr><td colspan="9" class="mut">hali yozuv yoʻq</td></tr>';
+}
+
+/* ---------- groups ---------- */
+let groupsCache=[];
+async function loadGroups(){
+  const d=await api("/admin/api/groups");groupsCache=d.groups;renderGroups();
+}
+function renderGroups(){
+  const q=($("#gq").value||"").toLowerCase();
+  const rows=groupsCache.filter(g=>!q||JSON.stringify(g).toLowerCase().includes(q));
+  $("#gcount").textContent=rows.length+" / "+groupsCache.length;
+  $("#tb-g tbody").innerHTML=rows.map(g=>{
+    const st=g.awaiting_token?'<span class="chip warn">token kutmoqda</span>':g.started?'<span class="chip ok">faol</span>':'<span class="chip dim">start yoʻq</span>';
+    return `<tr><td>${esc(g.group_id)}</td><td>${esc(g.driver_name||"—")} <span class="mut">${g.driver_id||""}</span></td>`+
+      `<td>${esc(g.team_driver_name||"—")}</td><td class="num">${g.loads_cached}</td><td>${st}${g.pending_images?` <span class="chip warn">${g.pending_images} rasm</span>`:""}</td>`+
+      `<td>${esc(g.ticket_status||"—")}</td><td>${g.last_msg_age_s==null?"—":fmtDur(g.last_msg_age_s)+" oldin"}</td><td>${esc(g.updated_at||"")}</td></tr>`;
+  }).join("");
+}
+$("#gq").addEventListener("input",renderGroups);
+
+/* ---------- db browser ---------- */
+let dbOffset=0,dbTotal=0;
+async function loadDbTables(){
+  const d=await api("/admin/api/db/tables");
+  $("#dbsel").innerHTML=d.tables.map(t=>`<option value="${t.db}:${t.table}">${t.db} · ${t.table} (${t.rows})</option>`).join("");
+  dbOffset=0;loadDbRows();
+}
+async function loadDbRows(){
+  const[db,table]=($("#dbsel").value||":").split(":");if(!table)return;
+  const q=encodeURIComponent($("#dbq").value||"");
+  const d=await api(`/admin/api/db/rows?db=${db}&table=${encodeURIComponent(table)}&limit=50&offset=${dbOffset}&search=${q}`);
+  dbTotal=d.total;
+  $("#tb-db thead").innerHTML="<tr>"+d.columns.map(c=>`<th>${esc(c)}</th>`).join("")+"</tr>";
+  $("#tb-db tbody").innerHTML=d.rows.map(r=>"<tr>"+r.map(v=>`<td title="${esc(v)}">${esc(v??"∅")}</td>`).join("")+"</tr>").join("")
+    ||`<tr><td colspan="${d.columns.length}" class="mut">boʻsh</td></tr>`;
+  $("#ppos").textContent=`${dbTotal?dbOffset+1:0}–${Math.min(dbOffset+50,dbTotal)} / ${dbTotal}`;
+  $("#pprev").disabled=dbOffset<=0;$("#pnext").disabled=dbOffset+50>=dbTotal;
+  $("#dbinfo").textContent="";
+}
+$("#dbsel").onchange=()=>{dbOffset=0;$("#dbq").value="";loadDbRows()};
+let dbqT;$("#dbq").addEventListener("input",()=>{clearTimeout(dbqT);dbqT=setTimeout(()=>{dbOffset=0;loadDbRows()},350)});
+$("#pprev").onclick=()=>{dbOffset=Math.max(0,dbOffset-50);loadDbRows()};
+$("#pnext").onclick=()=>{dbOffset+=50;loadDbRows()};
+
+/* ---------- state ---------- */
+async function loadState(){
+  const d=await api("/admin/api/state");
+  $("#stgrid").innerHTML=d.structures.map(s=>
+    `<details class="st"><summary><span>${esc(s.name)} <span class="mut">${s.type}</span></span><span class="sz">${s.size}</span></summary>`+
+    `<pre>${esc(s.sample?JSON.stringify(s.sample,null,1):"(namuna yoʻq)")}</pre></details>`).join("");
+}
+
+/* ---------- loader / refresh ---------- */
+async function load(view){
+  try{
+    if(view==="overview"){await loadOverview();await loadCharts()}
+    else if(view==="logs")await loadLogs();
+    else if(view==="checkin")await loadCheckin();
+    else if(view==="groups")await loadGroups();
+    else if(view==="db")await loadDbTables();
+    else if(view==="state")await loadState();
+  }catch(e){if(e.message!=="401")console.error(e)}
+}
+setInterval(()=>{const v=cur();if(!v||$("#app").style.display==="none")return;
+  if(v==="logs")loadLogs().catch(()=>{});
+  else if(v==="overview")loadOverview().catch(()=>{});
+  else if(v==="checkin")loadCheckin().catch(()=>{});
+},5000);
+setInterval(()=>{if(cur()==="overview"&&$("#app").style.display!=="none")loadCharts().catch(()=>{})},60000);
+
+async function boot(){
+  try{await api("/admin/api/overview");showApp();load("overview")}
+  catch(e){/* login ko'rinadi */}
+}
+boot();
+</script>
+</body>
+</html>

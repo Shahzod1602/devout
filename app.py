@@ -8,11 +8,13 @@ import os
 from contextlib import asynccontextmanager
 
 from api import api_router
+from api.admin import router as admin_router
 from db import init_db
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from log_buffer import attach_ring_buffer
 from paperwork import paperwork_api_router
-from stats import gemini_router, paperwork_router
+from stats import gemini_router, init_stats_db, paperwork_router
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 FastAPI starting up...")
+    # Idempotent init'lar — main.py ham chaqiradi, lekin `uvicorn app:app` to'g'ridan
+    # ishga tushirilsa ham admin panel (checkin_events jadvali, log ring buffer) ishlasin.
+    attach_ring_buffer()
     await init_db()
+    await init_stats_db()
     from main import run_bot  # late import — main.py o'z navbatida app'ni import qiladi
     bot_task = asyncio.create_task(run_bot())
     logger.info("🤖 Telegram bot started in background")
@@ -55,6 +61,7 @@ app.include_router(paperwork_router)         # /stats/paperwork/*
 app.include_router(gemini_router)            # /stats/gemini/*
 app.include_router(paperwork_api_router)     # /check-bol
 app.include_router(api_router)               # /send-message, /permissions/*, /accepted, ...
+app.include_router(admin_router)             # /admin — token-auth kuzatuv paneli
 
 
 @app.get("/health", include_in_schema=False)

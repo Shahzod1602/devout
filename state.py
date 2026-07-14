@@ -12,11 +12,15 @@ Qoidalar:
   tickets, messaging, va h.k.).
 """
 import asyncio
+import time
 from collections import deque
 
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN, CEREBRAS_API_KEY, ERROR_BOT_TOKEN, GROQ_API_KEY, OPENAI_API_KEY
 from openai import OpenAI
+
+# Protsess start vaqti — admin panel uptime hisoblaydi.
+STARTED_AT: float = time.time()
 
 # === Telegram singleton clients ===
 bot: Bot = Bot(token=BOT_TOKEN)

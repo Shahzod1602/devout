@@ -36,6 +36,7 @@ from external import get_api_token, get_loads_from_api, invalidate_token
 from groups import get_or_fetch_company_id
 from messaging import send_error_to_group
 from state import cerebras_client, groq_client
+from stats import record_checkin_event
 
 logger = logging.getLogger(__name__)
 
@@ -640,6 +641,10 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
     if company_id:
         perms = await get_company_permissions(str(company_id))
         if perms and not perms.get("checkInCheckOut", True):
+            await record_checkin_event(
+                group_id=chat_id, result="no_permission",
+                load_id=parsed.get("load_id"), doc_type=parsed.get("doc_type"),
+            )
             return True
 
     if not parsed.get("load_id"):
@@ -649,6 +654,11 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
         logger.debug("🔍 LLM matched but checkin/checkout incomplete — treating as non-checkin message")
         return False
 
+    event = {
+        "group_id": chat_id, "load_id": parsed["load_id"], "doc_type": parsed["doc_type"],
+        "checkin_raw": parsed.get("checkin"), "checkout_raw": parsed.get("checkout"),
+    }
+
     if not parsed.get("checkin") or not parsed.get("checkout"):
         # Ikkala vaqtsiz yubormaymiz: backend yo'q vaqtni ham yozib stop'ni
         # IsCompleted qiladi, Delay/DwellTime buziladi (avval 00:00 ketardi).
@@ -657,14 +667,17 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
             "Check in: 2:30 PM CST\n"
             "Check out: 4:15 PM CST"
         )
+        await record_checkin_event(result="missing_time", **event)
         return True
 
     is_pickup = parsed["doc_type"] == "BOL"
     result = await send_checkin_checkout(chat_id, parsed["load_id"], parsed["checkin"], parsed["checkout"], is_pickup)
+    tz_enum = extract_timezone(parsed.get("checkin")) if extract_tz_token(parsed.get("checkin")) else extract_timezone(parsed.get("checkout"))
     if result.get("success"):
         doc_type = parsed["doc_type"]
         stop_label = "Picked up" if doc_type == "BOL" else "Finished/delivered"
         await msg.answer(f"✅ {doc_type} Check-in/out received for Load #{parsed['load_id']} ({stop_label})")
+        await record_checkin_event(result="sent", tz_enum=tz_enum, **event)
     elif result.get("invalid_time"):
         await msg.answer(
             f"❌ Couldn't read the check-in/check-out time for Load #{parsed['load_id']}. "
@@ -672,18 +685,25 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
             "Check in: 2:30 PM CST\n"
             "Check out: 4:15 PM CST"
         )
+        await record_checkin_event(result="invalid_time", **event)
     elif result.get("server_down") or result.get("status") in (502, 503, 504):
         logger.warning("⚠️ Server down — silently skipping checkin/checkout reply for Load #%s: %s",
                        parsed['load_id'], result.get('error'))
+        await record_checkin_event(result="server_down", error=result.get("error"), **event)
     elif result.get("status") == 400:
         await msg.answer(f"❌ Invalid data for Load #{parsed['load_id']}. Please check the format and try again.")
+        await record_checkin_event(result="backend_error", error=f"400: {result.get('error')}", **event)
     elif result.get("status") == 404:
         await msg.answer(f"❌ Load #{parsed['load_id']} not found. Please check the load number.")
+        await record_checkin_event(result="backend_error", error=f"404: {result.get('error')}", **event)
     elif result.get("status") == 409:
         await msg.answer(result.get("error", "Conflict"))
+        await record_checkin_event(result="backend_error", error=f"409: {result.get('error')}", **event)
     elif result.get("status") == 500:
         await msg.answer("❌ Server error. Please try again in a few minutes.")
+        await record_checkin_event(result="backend_error", error=f"500: {result.get('error')}", **event)
     else:
         error = result.get("error", "Unknown error")
         await msg.answer(f"❌ Check-in/out failed for Load #{parsed['load_id']}\n\n⚠️ {error}")
+        await record_checkin_event(result="backend_error", error=str(error), **event)
     return True

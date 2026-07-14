@@ -7,6 +7,7 @@ Public API:
     current_gemini_endpoint          — ContextVar tagging the current endpoint
     paperwork_router, gemini_router  — FastAPI routers to include in the app
 """
+from .checkin import checkin_recent, checkin_summary, checkin_timeseries, record_checkin_event
 from .db import STATS_DB_PATH, init_stats_db
 from .gemini import (
     GEMINI_PRICING_PER_1M,
@@ -26,6 +27,10 @@ __all__ = [
     "init_stats_db",
     "record_paperwork_event",
     "record_gemini_call",
+    "record_checkin_event",
+    "checkin_summary",
+    "checkin_timeseries",
+    "checkin_recent",
     "current_gemini_endpoint",
     "GEMINI_PRICING_PER_1M",
     "paperwork_router",

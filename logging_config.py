@@ -89,6 +89,11 @@ def setup_logging() -> None:
         },
     })
 
+    # Admin panel "jonli oqim": oxirgi 2000 ta INFO+ yozuv ring bufferda.
+    # dictConfig'dan KEYIN ulanadi — dictConfig root handlerlarini almashtiradi.
+    from log_buffer import attach_ring_buffer  # noqa: PLC0415 — cycle'dan qochish
+    attach_ring_buffer(logging.INFO)
+
 
 def attach_telegram_handler(bot, chat_id: int | str, **kwargs):
     """Attach TelegramLogHandler to root logger. Returns handler (caller awaits start()).
