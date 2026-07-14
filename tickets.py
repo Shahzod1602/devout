@@ -52,10 +52,31 @@ _HISTORY_API_URL = f"{BASE_URL}/tickets/history"
 
 # ====== Status check ======
 
+# "todo" gate stale bo'lib qotmasin (audit v3): backend "done" webhook'i kelmasa yoki
+# bot restart poll-taymerni nolga tushirsa, guruh abadiy "todo"da qolib yangi ticket
+# yarata olmasdi (barcha xabar history'ga ketardi). created_at shu TTL'dan eski bo'lsa
+# "todo"ni stale deb hisoblab gate'ni ochamiz. Timestamp-asosli — restartda nolga tushmaydi.
+TODO_STALE_TTL_SECONDS = 2 * 60 * 60  # 2 soat (poll timeout bilan bir xil)
+
+
 def is_group_ticket_todo(group_id: str | int) -> bool:
-    """Group ticket status TODO ekanini tekshiradi."""
+    """Group ticket status TODO ekanini tekshiradi (stale TTL bilan)."""
     ticket_data = GROUP_TICKET_STATUS.get(str(group_id), {})
-    return ticket_data.get("status") == "todo"
+    if ticket_data.get("status") != "todo":
+        return False
+    created = ticket_data.get("created_at")
+    if created:
+        try:
+            age = (datetime.now() - datetime.fromisoformat(created)).total_seconds()
+            if age > TODO_STALE_TTL_SECONDS:
+                logger.warning(
+                    "⏱️ Group %s 'todo' %.0f daqiqa eski — stale deb gate ochildi (yangi ticketga ruxsat)",
+                    group_id, age / 60,
+                )
+                return False
+        except (ValueError, TypeError):
+            pass
+    return True
 
 
 # ====== History forwarding ======
