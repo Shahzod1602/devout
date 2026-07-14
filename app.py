@@ -55,3 +55,9 @@ app.include_router(paperwork_router)         # /stats/paperwork/*
 app.include_router(gemini_router)            # /stats/gemini/*
 app.include_router(paperwork_api_router)     # /check-bol
 app.include_router(api_router)               # /send-message, /permissions/*, /accepted, ...
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    """Liveness probe — deploy healthcheck shu endpoint'ni uradi (audit v3 #5)."""
+    return {"status": "ok"}

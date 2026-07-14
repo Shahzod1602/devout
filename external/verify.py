@@ -45,6 +45,13 @@ async def verify_delivery(bol_bytes: bytes, pod_bytes: bytes, references: list |
                 result = response.json()
                 logger.info("✅ Verify delivery success: %s", result)
                 return {"success": True, "data": result}
+            # audit v3 #4: askai 503 = AI throttle (429), hujjat xatosi EMAS — retryable
+            # signal. Error-guruhga qo'rqinchli raw matn chiqarmaymiz; pipeline driver'ga
+            # "tizim band, qayta yuboring" deydi.
+            if response.status_code == 503:
+                logger.warning("⏳ verify-delivery: askai band (503 retryable)")
+                return {"success": False, "retryable": True,
+                        "message": "AI service is busy — please resend in a few minutes"}
             await send_error_to_group(f"❌ Verify delivery error [{response.status_code}]: {response.text}")
             return {"success": False, "error": response.text}
 

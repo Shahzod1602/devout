@@ -12,7 +12,6 @@ import re
 from datetime import datetime
 
 import aiohttp
-import requests
 from aiogram.exceptions import TelegramMigrateToChat
 from config import ACTION_LOGS_URL, BOT_TOKEN, ENV_LABEL, ERROR_GROUP_ID, PAPERWORK_LOG_GROUP_ID, ssl_context
 from external import get_api_token
@@ -289,21 +288,23 @@ async def message_worker():
                     ]
                 }
             try:
-                # NOTE: sync requests in async — FAZA 7'da httpx.AsyncClient ga ko'chiriladi.
-                send_response = requests.post(f"{TELEGRAM_API_BASE}/sendMessage", json=send_payload, timeout=(5, 15))  # noqa: ASYNC210
-                send_result = send_response.json()
-                if send_result.get("ok"):
-                    message_id = send_result["result"]["message_id"]
-                    logger.info("📨 Message sent to group %s: %s...", data.group_id, data.message[:50])
-                    if data.has_pin_required:
-                        pin_payload = {"chat_id": data.group_id, "message_id": message_id,
-                                       "disable_notification": False}
-                        pin_response = requests.post(f"{TELEGRAM_API_BASE}/pinChatMessage", json=pin_payload, timeout=(5, 15))  # noqa: ASYNC210
-                        pin_result = pin_response.json()
-                        if pin_result.get("ok"):
-                            logger.info("📌 Message pinned in group %s", data.group_id)
-                else:
-                    await send_error_to_group(f"❌ Error sending message: {send_result.get('description', 'Unknown error')}", group_id=data.group_id)
+                # aiohttp (async) — sync `requests` event-loop'ni bloklardi; audit v3 #3.
+                timeout = aiohttp.ClientTimeout(total=20, connect=5)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(f"{TELEGRAM_API_BASE}/sendMessage", json=send_payload) as send_response:
+                        send_result = await send_response.json()
+                    if send_result.get("ok"):
+                        message_id = send_result["result"]["message_id"]
+                        logger.info("📨 Message sent to group %s: %s...", data.group_id, data.message[:50])
+                        if data.has_pin_required:
+                            pin_payload = {"chat_id": data.group_id, "message_id": message_id,
+                                           "disable_notification": False}
+                            async with session.post(f"{TELEGRAM_API_BASE}/pinChatMessage", json=pin_payload) as pin_response:
+                                pin_result = await pin_response.json()
+                            if pin_result.get("ok"):
+                                logger.info("📌 Message pinned in group %s", data.group_id)
+                    else:
+                        await send_error_to_group(f"❌ Error sending message: {send_result.get('description', 'Unknown error')}", group_id=data.group_id)
             except Exception as e:
                 await send_error_to_group(f"❌ Error sending message: {e}", group_id=data.group_id)
         except Exception as e:

@@ -396,6 +396,13 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                 else []
             )
             result = await verify_delivery(bol_bytes, file_bytes_value, references=_pod_refs)
+            # audit v3 #4: askai AI throttle (429→503) — POD "rad" EMAS, retryable.
+            # Driver'ga "tizim band, qayta yuboring" deymiz; cache/count o'zgarmaydi.
+            if result.get("retryable"):
+                await msg.answer(
+                    f"⏳ AI service is busy — please resend the POD for Load #{load_display_id} in a few minutes."
+                )
+                return "skipped", "POD verify throttled (retryable) — resend requested", new_load_id
             if result.get("success"):
                 verify_data = result.get("data", {})
                 # AUD2-4: askai hujjatni o'qiy olmagan bo'lsa (analysis_failed) — bu POD "qabul

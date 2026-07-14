@@ -292,12 +292,26 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
             logger.debug("   %s: %s", key, value)
         logger.debug("   File: %s (%d bytes)", file_name, len(bol_file_bytes))
 
-        async with httpx.AsyncClient(timeout=30) as client_http:
-            response = await client_http.post(url, data=data, files=files, headers=headers)
-            logger.info("📨 Paperwork API response: %s", response.status_code)
-            logger.debug("📨 Response body: %s", response.text[:500] if response.text else 'empty')
-            if response.status_code in [200, 201]:
-                return {"success": True, "response": response.json() if response.text else {}}
-            return {"success": False, "error": f"Status: {response.status_code}, Response: {response.text}"}
+        # EXT-RETRY (audit v3 #2): transient nosozlikda (timeout/connect/5xx) backend POST
+        # jimgina yo'qolmasin — qisqa backoff bilan qayta urinamiz. 4xx (client xato)
+        # qayta urinishdan foyda ko'rmaydi → darhol qaytaramiz.
+        last_error = "Unknown error"
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=30) as client_http:
+                    response = await client_http.post(url, data=data, files=files, headers=headers)
+                logger.info("📨 Paperwork API response: %s (urinish %d/3)", response.status_code, attempt + 1)
+                logger.debug("📨 Response body: %s", response.text[:500] if response.text else 'empty')
+                if response.status_code in [200, 201]:
+                    return {"success": True, "response": response.json() if response.text else {}}
+                if response.status_code < 500:
+                    return {"success": False, "error": f"Status: {response.status_code}, Response: {response.text}"}
+                last_error = f"Status: {response.status_code}, Response: {response.text}"
+            except httpx.HTTPError as e:
+                last_error = f"{e.__class__.__name__}: {e}"
+                logger.warning("⚠️ Paperwork POST transient xato (urinish %d/3): %s", attempt + 1, last_error)
+            if attempt < 2:
+                await asyncio.sleep((attempt + 1) * 2)  # 2s, keyin 4s
+        return {"success": False, "error": last_error}
     except Exception as e:
         return {"success": False, "error": str(e)}
