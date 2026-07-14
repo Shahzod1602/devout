@@ -150,8 +150,10 @@ DEPARTMENT_MAP = {"fleet": 0, "updater": 1, "dispatcher": 2, "insurance": 3, "sa
 PRIORITY_MAP = {"high": 0, "medium": 1, "low": 2}
 STATUS_TODO = 0
 
-TIMEZONE_MAP = {"est": 0, "edt": 0, "cst": 1, "cdt": 1, "mst": 2, "mdt": 2, "pst": 3, "pdt": 3}
-TIMEZONE_UTC_OFFSET = {"est": -5, "edt": -4, "cst": -6, "cdt": -5, "mst": -7, "mdt": -6, "pst": -8, "pdt": -7}
+# Timezone mapping checkin.py'da (_TZ_REGION/_REGION_ENUM): abbreviatura → IANA
+# region, DST-aware. Eski fixed-offset jadvallar (est=-5...) olib tashlandi —
+# ular yozda +1h xato berardi va checkout'ga alohida default qo'llanib
+# +2/3h siljish bugini keltirgan edi (2026-07-15).
 
 # === Timeouts / cooldowns ===
 COOLDOWN_DURATION = 30        # seconds — driver ticket cooldown

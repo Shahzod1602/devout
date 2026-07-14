@@ -10,22 +10,25 @@ Public funksiyalar:
 - send_checkin_checkout
 - process_checkin_checkout_text (yuqori darajadagi orchestrator)
 - is_advisory_text, is_strong_dispatch (filters)
-- parse_time_to_iso, extract_timezone, is_valid_load_id (utilities)
+- parse_time_to_iso, extract_timezone, extract_tz_token, is_valid_load_id (utilities)
+- resolve_shared_region, build_time_fields (TZ birlashtirish + payload vaqtlari)
 - extract_doc_numbers_from_text, build_checkin_checkout_text (reply enrichment)
+
+Timezone modeli: abbreviatura = region (IANA zona), DST-aware; checkin/checkout
+bitta umumiy regionda talqin qilinadi. Batafsil: "Timezone model" bo'limi quyida.
 """
 import asyncio
 import json
 import logging
 import re
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiogram import types
 from config import (
     CHECKIN_CHECKOUT_URL,
-    TIMEZONE_MAP,
-    TIMEZONE_UTC_OFFSET,
     ssl_context,
 )
 from db import get_company_permissions, get_load_from_cache
@@ -37,9 +40,32 @@ from state import cerebras_client, groq_client
 logger = logging.getLogger(__name__)
 
 
+# ====== Timezone model ======
+#
+# TZ abbreviatura REGIONNI bildiradi (EST ham EDT ham = Eastern) — qish/yoz
+# offsetni IANA zonaning o'zi hal qiladi. Bu backend TimeZoneMapper.cs va front
+# formatDate.js (dayjs.tz) bilan AYNAN bir xil semantika: enum 0..3 → IANA zona,
+# DST-aware. Fixed-offset jadval (est=-5...) displayda yozda +1h xato berardi.
+_TZ_TOKEN_PATTERN = r'E[SD]T|C[SD]T|M[SD]T|P[SD]T|ET|CT|MT|PT'
+_TZ_REGION = {
+    "est": "America/New_York", "edt": "America/New_York", "et": "America/New_York",
+    "cst": "America/Chicago", "cdt": "America/Chicago", "ct": "America/Chicago",
+    "mst": "America/Denver", "mdt": "America/Denver", "mt": "America/Denver",
+    "pst": "America/Los_Angeles", "pdt": "America/Los_Angeles", "pt": "America/Los_Angeles",
+}
+# Backend ETimeZone enum: Est=0, Cst=1, Mst=2, Pst=3
+_REGION_ENUM = {"America/New_York": 0, "America/Chicago": 1, "America/Denver": 2, "America/Los_Angeles": 3}
+# TZ hech qayerda ko'rsatilmagan bo'lsa — tarixiy default Pacific (enum 3).
+DEFAULT_REGION = "America/Los_Angeles"
+
+
 # ====== Regex patterns ======
 
-_TIME_CAPTURE = r'(?:\d{1,2}[:.\-]\d{2}|\d{4})\s*(?:[AaPp]\.?\s*[Mm]\.?)?(?:\s+[A-Za-z]{2,4}\b)?'
+# DIQQAT: AM/PM guruhi oldidagi \s* guruh ICHIDA turishi shart. Tashqarida bo'lsa
+# u bo'shliqni yutadi va TZ guruhi (\s+ talab qiladi) hech qachon match bo'lmaydi —
+# checkout oxirgi capture bo'lgani uchun backtrack ham bo'lmay, "15:33 CDT" dan
+# CDT tashlab yuborilardi (prod +2/3h siljish bugining asosiy sababi).
+_TIME_CAPTURE = r'(?:\d{1,2}[:.\-]\d{2}|\d{4})(?:\s*[AaPp]\.?\s*[Mm]\.?)?(?:\s+[A-Za-z]{2,4}\b)?'
 # Load ID — kamida 3 ta raqam bo'lishi shart (alfanumerik prefiks/suffiks ruxsat: "L260504-01027")
 _LOAD_ID = r'[A-Za-z0-9\-]*\d{3,}[A-Za-z0-9\-]*'
 
@@ -111,27 +137,46 @@ _INVALID_LOAD_ID_TOKENS = {
 
 # ====== Pure utilities ======
 
-def parse_time_to_iso(time_str: str) -> str:
-    """Vaqt stringini lokal timezone dan UTC ga convert qilib ISO 8601 ga o'girish.
+def extract_tz_token(time_str) -> str | None:
+    """Vaqt stringidan TZ abbreviaturasini (est/edt/et/ct/mt/pt...) olish.
+
+    \\b chegaralari shart: aks holda "WESTERN" ichidagi "EST" ham match bo'lardi.
+    """
+    if not time_str or not isinstance(time_str, str):
+        return None
+    match = re.search(r'\b(' + _TZ_TOKEN_PATTERN + r')\b', time_str, re.IGNORECASE)
+    return match.group(1).lower() if match else None
+
+
+def parse_time_to_iso(time_str, default_region: str = DEFAULT_REGION) -> str | None:
+    """Vaqt stringini driver-lokal vaqtdan HAQIQIY UTC ga o'girish (ISO 8601).
 
     Qo'llab-quvvatlaydi: "10:00 AM PST", "10.00 AM", "1455", "1000 AM", "14:30",
-    "04:50PM DPT" (noma'lum suffix strip qilinadi). TZ topilmasa default PST.
+    "15:10 PM EST" (24h+meridiem), "12:00n" (noon), "04:50PM DPT" (noma'lum
+    suffix strip). TZ abbreviatura regionga (IANA zona) map qilinadi — DST'ni
+    zona o'zi hal qiladi. Stringda TZ bo'lmasa `default_region` ishlatiladi.
+
+    Parse bo'lmasa None qaytaradi — yarim tun (00:00) fallback YO'Q: u prod'da
+    jimgina buzuq check-in yozuvlarini yaratardi (Delay/DwellTime ham buzilardi).
     """
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
-    fallback = f"{today}T00:00:00.000Z"
-    if not time_str or not str(time_str).strip():
-        return fallback
+    if not time_str or not isinstance(time_str, str) or not time_str.strip():
+        return None
 
     original = str(time_str)
     s = original.strip()
 
-    # 1) Known timezone aniqlash va strip
-    tz_match = re.search(r'\b(EDT|EST|CDT|CST|MDT|MST|PDT|PST)\b', s, re.IGNORECASE)
-    utc_offset = TIMEZONE_UTC_OFFSET.get(tz_match.group(1).lower(), -8) if tz_match else -8
-    s = re.sub(r'\s*\b(EDT|EST|CDT|CST|MDT|MST|PDT|PST)\b\s*', ' ', s, flags=re.IGNORECASE)
+    # 1) TZ tokenni aniqlash (region sifatida) va strip
+    token = extract_tz_token(s)
+    region = _TZ_REGION[token] if token else default_region
+    s = re.sub(r'\s*\b(' + _TZ_TOKEN_PATTERN + r')\b\s*', ' ', s, flags=re.IGNORECASE)
 
     # 2) "a.m." / "p.m." → "AM"/"PM"
     s = re.sub(r'([AaPp])\s*\.\s*([Mm])\s*\.?', r'\1\2', s)
+
+    # 2b) Noon shorthand: "12:00n" / "12 noon" / "noon" → 12:00 PM
+    s = re.sub(r'\b(12(?:[:.\-]\d{2})?)\s*n(?:oon)?\b\.?', r'\1 PM', s, flags=re.IGNORECASE)
+    if s.strip().lower() == "noon":
+        s = "12:00 PM"
 
     # 3) Nuqta/tire separator → colon
     s = re.sub(r'(\d{1,2})[.\-](\d{2})', r'\1:\2', s)
@@ -151,6 +196,12 @@ def parse_time_to_iso(time_str: str) -> str:
     # 8) Extra bo'sh joy va trailing punktuatsiyani tozalash
     s = re.sub(r'\s+', ' ', s).strip(" .,;:!?").upper()
 
+    # 9) 24-soat + meridiem aralash ("15:10 PM") — %I formatlar hour>12 da yiqilib
+    # yarim tun fallback'ka olib kelardi. 24-soat qiymatiga ishonib meridiem tashlanadi.
+    m24 = re.match(r'^(\d{1,2}):(\d{2})\s*(?:AM|PM)$', s)
+    if m24 and (int(m24.group(1)) > 12 or int(m24.group(1)) == 0):
+        s = f"{m24.group(1)}:{m24.group(2)}"
+
     has_ampm = bool(re.search(r'[AP]M', s))
     formats = ("%I:%M %p", "%I:%M%p") if has_ampm else ("%H:%M", "%I:%M")
 
@@ -164,26 +215,47 @@ def parse_time_to_iso(time_str: str) -> str:
 
     if parsed is None:
         logger.warning("⚠️ parse_time_to_iso: parse bo'lmadi | original=%r | normalized=%r", original, s)
-        return fallback
+        return None
 
-    today_dt = datetime.now(UTC)
-    parsed = parsed.replace(year=today_dt.year, month=today_dt.month, day=today_dt.day)
-    local_tz = timezone(timedelta(hours=utc_offset))
-    local_dt = parsed.replace(tzinfo=local_tz)
-    utc_dt = local_dt.astimezone(UTC)
-    return utc_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    # Sana ham REGION bo'yicha "bugun" bo'lishi kerak: UTC yarim tundan keyin
+    # (masalan 19:00 PDT) UTC-sana ertaga o'tib ketadi, driver esa hali bugunda.
+    zone = ZoneInfo(region)
+    now_local = datetime.now(zone)
+    local_dt = parsed.replace(year=now_local.year, month=now_local.month, day=now_local.day, tzinfo=zone)
+    return local_dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def extract_timezone(time_str: str) -> int:
-    """Vaqt stringidan timezone enum qiymatini olish. Default: PST (3)."""
-    # LLM parse checkin/checkout'ni None qaytarishi mumkin — re.search(None) TypeError
-    # bilan butun handler'ni yiqitardi (prod log 2026-07-07). Guard: default PST.
-    if not time_str or not isinstance(time_str, str):
-        return 3
-    match = re.search(r'(EDT|EST|CDT|CST|MDT|MST|PDT|PST)', time_str, re.IGNORECASE)
-    if match:
-        return TIMEZONE_MAP.get(match.group(1).lower(), 3)
-    return 3
+def extract_timezone(time_str) -> int:
+    """Vaqt stringidan backend ETimeZone enum (0=Est 1=Cst 2=Mst 3=Pst). Default: 3."""
+    token = extract_tz_token(time_str)
+    return _REGION_ENUM[_TZ_REGION[token]] if token else 3
+
+
+def resolve_shared_region(checkin, checkout) -> str | None:
+    """Ikkala vaqt uchun UMUMIY region: checkin'dagi token, bo'lmasa checkout'dagi.
+
+    Driverlar TZ'ni ko'pincha faqat bitta vaqtga yozadi — ikkinchisi ham o'sha
+    zonada deb qabul qilinadi (alohida-alohida default'lash +2/3h siljish berardi).
+    """
+    token = extract_tz_token(checkin) or extract_tz_token(checkout)
+    return _TZ_REGION[token] if token else None
+
+
+def build_time_fields(checkin, checkout) -> tuple[str, str, int] | None:
+    """(checkin_iso, checkout_iso, tz_enum) yoki None (birortasi parse bo'lmasa).
+
+    Checkout checkin'dan oldin chiqsa — tun oralab o'tgan deb ertasi kunga suriladi
+    (aks holda backend DwellTime manfiy bo'lardi).
+    """
+    region = resolve_shared_region(checkin, checkout) or DEFAULT_REGION
+    checkin_iso = parse_time_to_iso(checkin, default_region=region)
+    checkout_iso = parse_time_to_iso(checkout, default_region=region)
+    if not checkin_iso or not checkout_iso:
+        return None
+    if checkout_iso < checkin_iso:  # ISO format bir xil — leksikografik = xronologik
+        rolled = datetime.strptime(checkout_iso, "%Y-%m-%dT%H:%M:%S.000Z").replace(tzinfo=UTC) + timedelta(days=1)
+        checkout_iso = rolled.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return checkin_iso, checkout_iso, _REGION_ENUM[region]
 
 
 def is_valid_load_id(s) -> bool:
@@ -439,6 +511,14 @@ async def send_checkin_checkout(group_id, load_id, checkin, checkout, is_pickup)
     logger.info("📋 CheckinCheckout | Group: %s | Load: %s | In: %s | Out: %s | isPickup: %s",
                 group_id, load_id, checkin, checkout, is_pickup)
 
+    time_fields = build_time_fields(checkin, checkout)
+    if time_fields is None:
+        # Yarim tun fallback bilan buzuq yozuv yaratmaymiz — driver'dan qayta so'raladi.
+        logger.warning("⚠️ CheckinCheckout: vaqt parse bo'lmadi | in=%r | out=%r", checkin, checkout)
+        return {"success": False, "invalid_time": True,
+                "error": f"unparseable time (in={checkin!r}, out={checkout!r})"}
+    checkin_iso, checkout_iso, tz_enum = time_fields
+
     resolved_id = await resolve_load_id(group_id, load_id)
     logger.debug("🔍 Resolved load ID: %s -> %s", load_id, resolved_id)
 
@@ -450,9 +530,9 @@ async def send_checkin_checkout(group_id, load_id, checkin, checkout, is_pickup)
     payload = {
         "groupId": str(group_id),
         "loadId": resolved_id,
-        "checkIn": parse_time_to_iso(checkin),
-        "checkOut": parse_time_to_iso(checkout),
-        "timeZone": extract_timezone(checkin),
+        "checkIn": checkin_iso,
+        "checkOut": checkout_iso,
+        "timeZone": tz_enum,
         "isPickup": is_pickup,
     }
     logger.debug("📤 CheckinCheckout payload: %s", json.dumps(payload))
@@ -569,12 +649,29 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
         logger.debug("🔍 LLM matched but checkin/checkout incomplete — treating as non-checkin message")
         return False
 
+    if not parsed.get("checkin") or not parsed.get("checkout"):
+        # Ikkala vaqtsiz yubormaymiz: backend yo'q vaqtni ham yozib stop'ni
+        # IsCompleted qiladi, Delay/DwellTime buziladi (avval 00:00 ketardi).
+        await msg.answer(
+            f"Please include both check-in and check-out times for Load #{parsed['load_id']}, e.g:\n"
+            "Check in: 2:30 PM CST\n"
+            "Check out: 4:15 PM CST"
+        )
+        return True
+
     is_pickup = parsed["doc_type"] == "BOL"
     result = await send_checkin_checkout(chat_id, parsed["load_id"], parsed["checkin"], parsed["checkout"], is_pickup)
     if result.get("success"):
         doc_type = parsed["doc_type"]
         stop_label = "Picked up" if doc_type == "BOL" else "Finished/delivered"
         await msg.answer(f"✅ {doc_type} Check-in/out received for Load #{parsed['load_id']} ({stop_label})")
+    elif result.get("invalid_time"):
+        await msg.answer(
+            f"❌ Couldn't read the check-in/check-out time for Load #{parsed['load_id']}. "
+            "Please resend, e.g:\n"
+            "Check in: 2:30 PM CST\n"
+            "Check out: 4:15 PM CST"
+        )
     elif result.get("server_down") or result.get("status") in (502, 503, 504):
         logger.warning("⚠️ Server down — silently skipping checkin/checkout reply for Load #%s: %s",
                        parsed['load_id'], result.get('error'))
