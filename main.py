@@ -4,6 +4,7 @@
 """
 import asyncio
 import logging
+import signal
 from datetime import datetime
 
 import uvicorn
@@ -57,8 +58,11 @@ async def main():
         await tg_log_handler.start()
         logger.info("📡 Telegram log handler started (ERROR instant, WARNING batched 10s)")
 
-    worker_task = asyncio.create_task(message_worker())
-    logger.info("📨 Message worker started")
+    # #17 (audit v3): bir nechta message worker — burst'da (masalan bitta company'ning
+    # ko'p guruhiga paperwork notify) xabarlar parallel yuboriladi; bittalik worker sekin edi.
+    NUM_MESSAGE_WORKERS = 3
+    worker_tasks = [asyncio.create_task(message_worker()) for _ in range(NUM_MESSAGE_WORKERS)]
+    logger.info("📨 %d message worker started", NUM_MESSAGE_WORKERS)
 
     retry_task = asyncio.create_task(retry_failed_messages())
     logger.info("🔁 Failed messages retry worker started")
@@ -70,9 +74,62 @@ async def main():
         log_level="info",
     )
     server = uvicorn.Server(config)
+    serve_task = asyncio.create_task(server.serve())
     bot_task = asyncio.create_task(run_bot())
 
-    await asyncio.gather(server.serve(), bot_task, worker_task, retry_task)
+    # #18 (audit v3) GRACEFUL SHUTDOWN: SIGTERM (docker stop) / SIGINT darhol o'ldirmasin —
+    # message_queue'ni drain, Telegram log buffer'ini flush, bot sessiyalarini yopamiz.
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(_sig, stop_event.set)
+        except NotImplementedError:
+            # Signalsiz platform (masalan Windows) — __main__ dagi KeyboardInterrupt fallback.
+            pass
+
+    background = [serve_task, bot_task, retry_task, *worker_tasks]
+    # Shutdown signali kelguncha YOKI biror background task tugab qolguncha ishlaymiz.
+    await asyncio.wait(
+        [*background, asyncio.ensure_future(stop_event.wait())],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    await _graceful_shutdown(server, serve_task, bot_task, retry_task, worker_tasks, tg_log_handler)
+
+
+async def _graceful_shutdown(server, serve_task, bot_task, retry_task, worker_tasks, tg_log_handler):
+    """SIGTERM/SIGINT yoki task tugashida yumshoq to'xtash (audit v3 #18).
+
+    Tartib: uvicorn'ni to'xtatish → navbatdagi xabarlarni yuborishga ulgurish (bounded)
+    → Telegram log buffer flush → task'larni bekor qilish → bot sessiyalarini yopish.
+    """
+    from state import message_queue
+
+    logger.info("🛑 Shutdown boshlandi — message_queue drain qilinmoqda...")
+    # 1) Uvicorn'ni yumshoq to'xtatamiz (in-flight so'rovlar tugasin, yangisi qabul qilinmasin).
+    server.should_exit = True
+    # 2) Navbatdagi xabarlarni yuborishga imkon beramiz (worker'lar hali tirik) — 10s cheklov.
+    try:
+        await asyncio.wait_for(message_queue.join(), timeout=10)
+        logger.info("✅ Message queue drained")
+    except TimeoutError:
+        logger.warning("⚠️ Queue drain timeout (10s) — %d xabar yuborilmay qoldi", message_queue.qsize())
+    # 3) Telegram log buffer'ini flush + worker'ni to'xtatamiz (stop() ichida final flush bor).
+    if tg_log_handler is not None:
+        try:
+            await tg_log_handler.stop()
+        except Exception:
+            logger.debug("tg_log_handler.stop() failed", exc_info=True)
+    # 4) Qolgan barcha task'larni bekor qilamiz.
+    for _t in (bot_task, retry_task, serve_task, *worker_tasks):
+        _t.cancel()
+    # 5) Bot HTTP sessiyalarini yopamiz (aiohttp connector leak bo'lmasin).
+    for _b in (bot, error_bot):
+        try:
+            await _b.session.close()
+        except Exception:
+            logger.debug("bot.session.close() failed", exc_info=True)
+    logger.info("👋 Graceful shutdown tugadi")
 
 
 async def _initialize_state():

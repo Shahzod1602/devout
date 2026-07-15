@@ -15,7 +15,12 @@ from aiogram.filters import Command, CommandObject
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from checkin import build_checkin_checkout_text, process_checkin_checkout_text
 from config import DB_PATH, DEFAULT_QUICK_BUTTONS
-from cooldown import check_driver_cooldown, update_conversation_time, update_driver_cooldown
+from cooldown import (
+    check_driver_cooldown,
+    clear_driver_cooldown,
+    update_conversation_time,
+    update_driver_cooldown,
+)
 from db import get_company_permissions
 from db.connect import db_connect
 from external import get_api_token, get_eta_message_for_load, get_loads_from_api
@@ -806,6 +811,11 @@ async def generic_text_handler(msg: types.Message):
         if not can_send:
             logger.debug("⏳ Driver %s cooldown: %d seconds remaining", user_id, int(remaining))
             return
+        # CD-2 (audit v3 #14): cooldown'ni DARHOL reserve qilamiz — check↔send orasidagi
+        # TOCTOU'ni yopadi (driver 2 xabarni tez ketma-ket yuborsa, ilgari ikkalasi ham
+        # cooldown'dan o'tib 2 ta ticket yaratardi). check→reserve orasida await-suspend
+        # yo'q, shuning uchun atomik; send muvaffaqiyatsiz bo'lsa pastda bekor qilinadi.
+        await update_driver_cooldown(user_id)
 
     company_id = await get_or_fetch_company_id(chat_id)
     if company_id:
@@ -833,10 +843,11 @@ async def generic_text_handler(msg: types.Message):
         priority=priority,
         ticket_type=1,
     )
-    # CD-1: cooldown'ni faqat ticket muvaffaqiyatli yuborilganda yozamiz (check_driver_cooldown
-    # 771-satrda o'qiydigan bir xil user_id kaliti bilan). Muvaffaqiyatsizlikda driver retry qila oladi.
-    if ok:
-        await update_driver_cooldown(user_id)
+    # CD-1: cooldown check'da RESERVE qilingan (yuqorida). Send muvaffaqiyatsiz bo'lsa
+    # reserve'ni bekor qilamiz — driver darhol qayta urina oladi. Muvaffaqiyatda reserve
+    # o'z kuchida qoladi (message-receipt vaqti — send tugagunicha bo'lgan farq ahamiyatsiz).
+    if not ok:
+        await clear_driver_cooldown(user_id)
 
 
 # ====== Pending image callbacks ======
@@ -849,7 +860,10 @@ async def pending_bol_callback(callback: types.CallbackQuery):
         await callback.answer()
         return
     group_key = str(chat_id)
-    pending = GROUP_PENDING_IMAGES.get(group_key)
+    # ROUTE-1 (audit v3 #13): atomik "claim" — har qanday await'dan OLDIN pop qilamiz.
+    # Aks holda double-tap ikkala callback ham get(pending)→await→build→run qilib
+    # dublikat BOL-check + dublikat paperwork issue yaratardi (pop await'dan keyin edi).
+    pending = GROUP_PENDING_IMAGES.pop(group_key, None)
 
     timeout_task = GROUP_IMAGE_TIMEOUT_TASKS.pop(group_key, None)
     if timeout_task and not timeout_task.done():
@@ -864,7 +878,6 @@ async def pending_bol_callback(callback: types.CallbackQuery):
     try:
         pdf_bytes = build_pdf_from_images(pending["pages"])
         file_name = f"doc_{callback.message.message_id}.pdf"
-        GROUP_PENDING_IMAGES.pop(group_key, None)
         checking_msg = await callback.message.answer("🔍 Checking document...")
         await run_bol_check(chat_id, pdf_bytes, file_name, callback.message, checking_msg)
     except Exception as e:

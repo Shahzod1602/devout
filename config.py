@@ -133,6 +133,20 @@ PAGE_COUNT_ENFORCE = os.environ.get("PAGE_COUNT_ENFORCE", "1").strip() == "1"
 # BUTUNLAY O'CHIQ (503) — audit H1 (authsiz control-plane) takrorlanmasin.
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
 
+# === Control-plane auth (audit v3 H2) ===
+# Backend webhook endpointlari (api/routes.py: /send-message, /accepted,
+# /permissions, /group-deleted, ...) autentifikatsiyasiz edi — tarmoq ichidagi
+# istalgan tomon guruhlarga xabar yuborishi / permissions o'zgartirishi mumkin.
+# DARK-LAUNCH (backend hali X-Api-Key yubormaydi — u boshqa jamoaniki):
+#   CONTROL_PLANE_API_KEY bo'sh        → auth O'CHIQ (legacy, hozirgi xulq).
+#   key bor + ENFORCE=0 (default)      → MONITOR: kalitsiz so'rov O'TADI, faqat
+#                                        adoption log-summary'si yoziladi.
+#   key bor + ENFORCE=1                → kalitsiz/xato so'rov 401.
+# Backend kalit yubora boshlaganini MONITOR loglaridan tasdiqlab, keyin
+# ENFORCE=1 ga o'tkaziladi (bir env o'zgarishi, kod deploy'siz).
+CONTROL_PLANE_API_KEY = os.environ.get("CONTROL_PLANE_API_KEY", "").strip()
+CONTROL_PLANE_AUTH_ENFORCE = os.environ.get("CONTROL_PLANE_AUTH_ENFORCE", "0").strip() == "1"
+
 # === API login credentials ===
 LOGIN_CREDENTIALS = {
     "email": _require_env("LOGIN_EMAIL"),

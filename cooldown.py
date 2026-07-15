@@ -39,6 +39,14 @@ async def update_driver_cooldown(driver_id):
     DRIVER_COOLDOWN[driver_id] = datetime.now()
 
 
+async def clear_driver_cooldown(driver_id):
+    """Reserve qilingan cooldown'ni bekor qilish (audit v3 #14).
+
+    Ticket send muvaffaqiyatsiz bo'lsa chaqiriladi — driver darhol qayta urina oladi.
+    """
+    DRIVER_COOLDOWN.pop(driver_id, None)
+
+
 async def check_conversation_timeout(group_id, user_id):
     """Non-driver user conversation timeout'i ichida ekanligini tekshirish.
 

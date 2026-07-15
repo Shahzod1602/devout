@@ -43,6 +43,17 @@ from state import GROUP_IMAGE_TIMEOUT_TASKS, GROUP_PENDING_IMAGES, bot, client
 
 logger = logging.getLogger(__name__)
 
+# Per-guruh paperwork lock (audit v3 #13) — bitta guruhning hujjatlari KETMA-KET
+# ishlanadi. Aks holda double-tap yoki tez ketma-ket rasm concurrent ishlab,
+# cache-count/post_paperwork_issue'ni race qilib dublikat karta/hisob yaratardi.
+# (Per-load emas — load_id impl ichida aniqlanadi; per-guruh sodda + xavfsiz,
+# paperwork past chastotali.)
+_GROUP_PAPERWORK_LOCKS: dict = {}
+
+
+def _group_paperwork_lock(chat_id) -> asyncio.Lock:
+    return _GROUP_PAPERWORK_LOCKS.setdefault(str(chat_id), asyncio.Lock())
+
 
 # ====== Lightweight LLM helpers ======
 
@@ -53,12 +64,14 @@ async def summarize_text(text: str):
     if len(text.split()) <= 6:
         return text
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Summarize briefly but keep meaning."},
-                      {"role": "user", "content": text}],
-            max_tokens=60,
-            temperature=0.3,
+        res = await asyncio.to_thread(
+            lambda: client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "system", "content": "Summarize briefly but keep meaning."},
+                          {"role": "user", "content": text}],
+                max_tokens=60,
+                temperature=0.3,
+            )
         )
         return (res.choices[0].message.content or "").strip()
     except Exception:
@@ -119,13 +132,15 @@ async def classify_message(text: str):
 
         Message: "{text}"
         """
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system",
-                       "content": "You triage Telegram messages from truck drivers for a logistics company. Reply with only one word from the specified categories."},
-                      {"role": "user", "content": prompt}],
-            max_tokens=10,
-            temperature=0.1,
+        res = await asyncio.to_thread(
+            lambda: client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "system",
+                           "content": "You triage Telegram messages from truck drivers for a logistics company. Reply with only one word from the specified categories."},
+                          {"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0.1,
+            )
         )
         # '"chat."' kabi punktuatsiyali javob avval valid ro'yxatdan o'tmay "updater"
         # bo'lib soxta ticket yaratardi — chetki qo'shtirnoq/nuqtani ham olamiz.
@@ -215,9 +230,11 @@ async def run_bol_check(chat_id: int, file_bytes_value: bytes, file_name: str, m
     """
     status, reason, load_id = "skipped", "Unknown outcome", None
     try:
-        status, reason, load_id = await _run_bol_check_impl(
-            chat_id, file_bytes_value, file_name, msg, answer_msg
-        )
+        # PW-LOCK (audit v3 #13): guruh hujjatlarini ketma-ket ishlaymiz (concurrent race yo'q).
+        async with _group_paperwork_lock(chat_id):
+            status, reason, load_id = await _run_bol_check_impl(
+                chat_id, file_bytes_value, file_name, msg, answer_msg
+            )
     except Exception as e:
         reason = f"Unexpected error: {e}"
         raise

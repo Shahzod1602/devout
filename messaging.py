@@ -287,26 +287,40 @@ async def message_worker():
                         for row in data.inline_buttons
                     ]
                 }
-            try:
-                # aiohttp (async) — sync `requests` event-loop'ni bloklardi; audit v3 #3.
-                timeout = aiohttp.ClientTimeout(total=20, connect=5)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.post(f"{TELEGRAM_API_BASE}/sendMessage", json=send_payload) as send_response:
-                        send_result = await send_response.json()
-                    if send_result.get("ok"):
-                        message_id = send_result["result"]["message_id"]
-                        logger.info("📨 Message sent to group %s: %s...", data.group_id, data.message[:50])
-                        if data.has_pin_required:
-                            pin_payload = {"chat_id": data.group_id, "message_id": message_id,
-                                           "disable_notification": False}
-                            async with session.post(f"{TELEGRAM_API_BASE}/pinChatMessage", json=pin_payload) as pin_response:
-                                pin_result = await pin_response.json()
-                            if pin_result.get("ok"):
-                                logger.info("📌 Message pinned in group %s", data.group_id)
-                    else:
-                        await send_error_to_group(f"❌ Error sending message: {send_result.get('description', 'Unknown error')}", group_id=data.group_id)
-            except Exception as e:
-                await send_error_to_group(f"❌ Error sending message: {e}", group_id=data.group_id)
+            # #17 (audit v3): transient tarmoq blib'ida (timeout/connreset) xabar
+            # yo'qolmasin — qisqa retry. Telegram MANTIQIY xatosi (ok=false, masalan
+            # "chat not found") retry'dan foyda ko'rmaydi → darhol error-guruhga.
+            sent_ok = False
+            last_desc = "Unknown error"
+            for attempt in range(3):
+                try:
+                    # aiohttp (async) — sync `requests` event-loop'ni bloklardi; audit v3 #3.
+                    timeout = aiohttp.ClientTimeout(total=20, connect=5)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.post(f"{TELEGRAM_API_BASE}/sendMessage", json=send_payload) as send_response:
+                            send_result = await send_response.json()
+                        if send_result.get("ok"):
+                            message_id = send_result["result"]["message_id"]
+                            logger.info("📨 Message sent to group %s: %s...", data.group_id, data.message[:50])
+                            sent_ok = True
+                            if data.has_pin_required:
+                                pin_payload = {"chat_id": data.group_id, "message_id": message_id,
+                                               "disable_notification": False}
+                                async with session.post(f"{TELEGRAM_API_BASE}/pinChatMessage", json=pin_payload) as pin_response:
+                                    pin_result = await pin_response.json()
+                                if pin_result.get("ok"):
+                                    logger.info("📌 Message pinned in group %s", data.group_id)
+                            break
+                        # Mantiqiy xato — retry qilmaymiz.
+                        last_desc = send_result.get("description", "Unknown error")
+                        break
+                except Exception as e:  # noqa: PERF203 — transient send xatosi, retry
+                    last_desc = str(e)
+                    logger.warning("⚠️ sendMessage transient xato (urinish %d/3): %s", attempt + 1, last_desc)
+                    if attempt < 2:
+                        await asyncio.sleep((attempt + 1) * 1.0)  # 1s, keyin 2s
+            if not sent_ok:
+                await send_error_to_group(f"❌ Error sending message: {last_desc}", group_id=data.group_id)
         except Exception as e:
             await send_error_to_group(f"❌ Worker error: {e}")
             await asyncio.sleep(1)

@@ -409,12 +409,14 @@ async def detect_priority(text: str):
         Message: "{text}"
         Priority:
         """
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Determine priority level. Reply with only one word."},
-                      {"role": "user", "content": prompt}],
-            max_tokens=5,
-            temperature=0.1,
+        res = await asyncio.to_thread(
+            lambda: client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "system", "content": "Determine priority level. Reply with only one word."},
+                          {"role": "user", "content": prompt}],
+                max_tokens=5,
+                temperature=0.1,
+            )
         )
         priority = (res.choices[0].message.content or "").strip().lower()
         if priority in ["high", "medium", "low"]:

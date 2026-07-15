@@ -80,6 +80,35 @@ async def get_api_token():
             return None
 
 
+async def _get_with_retry(url: str, headers: dict, timeout_s: int = 30, attempts: int = 3):
+    """Idempotent GET + qisqa backoff-retry (audit v3 #16) — faqat timeout/connect/5xx.
+
+    2xx yoki 4xx javob DARHOL qaytariladi (4xx retry'dan foyda ko'rmaydi). Transient
+    (httpx transport xato yoki 5xx) urinishlar orasida 1.5s→3s kutiladi. Barcha
+    urinishlar transport xato bilan tugasa — oxirgi httpx.HTTPError raise qilinadi
+    (chaqiruvchi uni o'z kontrakti bo'yicha HTTPException'ga yoki {} ga aylantiradi);
+    barchasi 5xx bo'lsa oxirgi 5xx javob qaytariladi.
+    """
+    last_exc: httpx.HTTPError | None = None
+    response = None
+    for attempt in range(attempts):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s) as client_http:
+                response = await client_http.get(url, headers=headers)
+            if response.status_code < 500:
+                return response  # 2xx/4xx — barqaror, retry yo'q
+            last_exc = None
+            logger.warning("⚠️ GET %s → HTTP %s (urinish %d/%d)", url, response.status_code, attempt + 1, attempts)
+        except httpx.HTTPError as e:
+            last_exc = e
+            logger.warning("⚠️ GET transient xato (urinish %d/%d): %s", attempt + 1, attempts, e.__class__.__name__)
+        if attempt < attempts - 1:
+            await asyncio.sleep((attempt + 1) * 1.5)  # 1.5s, keyin 3s
+    if last_exc is not None:
+        raise last_exc
+    return response  # 5xx tugadi — oxirgi 5xx javob (chaqiruvchi non-2xx sifatida ishlaydi)
+
+
 async def get_loads_from_api(group_id: str) -> list:
     """Get all loads for a Telegram group from the backend.
 
@@ -100,9 +129,9 @@ async def get_loads_from_api(group_id: str) -> list:
 
     # 30s timeout matches post_paperwork_issue. Default (5s) was too tight
     # for prod backend during occasional slow periods → ConnectTimeout.
+    # #16: transient (timeout/connect/5xx) da qisqa backoff-retry.
     try:
-        async with httpx.AsyncClient(timeout=30) as client_http:
-            response = await client_http.get(url, headers=headers)
+        response = await _get_with_retry(url, headers, timeout_s=30)
     except httpx.TimeoutException as e:
         raise HTTPException(status_code=504, detail=f"Backend timeout: {e.__class__.__name__}") from e
     except httpx.HTTPError as e:
@@ -137,8 +166,7 @@ async def get_load_details(group_id, load_db_id) -> dict:
     }
     for path in (f"/v1/loads/{load_db_id}", f"/loads/{load_db_id}"):
         try:
-            async with httpx.AsyncClient(timeout=10) as client_http:
-                response = await client_http.get(f"{BASE_URL}{path}", headers=headers)
+            response = await _get_with_retry(f"{BASE_URL}{path}", headers, timeout_s=10)
         except httpx.HTTPError as e:
             logger.debug("load details so'rovi xato (id=%s, %s): %s", load_db_id, path, e)
             return {}
@@ -181,9 +209,9 @@ async def get_eta_message_for_load(group_id, load_id) -> dict:
         "X-Group-Id": str(group_id),
     }
 
+    # #16: transient (timeout/connect/5xx) da qisqa backoff-retry.
     try:
-        async with httpx.AsyncClient(timeout=30) as client_http:
-            response = await client_http.get(url, headers=headers)
+        response = await _get_with_retry(url, headers, timeout_s=30)
     except httpx.TimeoutException as e:
         raise HTTPException(status_code=504, detail=f"Backend timeout: {e.__class__.__name__}") from e
     except httpx.HTTPError as e:

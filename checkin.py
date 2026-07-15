@@ -41,6 +41,16 @@ from stats import record_checkin_event
 logger = logging.getLogger(__name__)
 
 
+def _llm_create(llm, **kwargs):
+    """asyncio.to_thread uchun sync LLM chaqiruv o'rovi (audit v3 #11).
+
+    Overloaded `.create` ni to'g'ridan-to'g'ri to_thread'ga uzatish mypy'ni
+    chalg'itadi, lambda esa loop-o'zgaruvchida ruff B023 beradi — oddiy funksiya
+    ikkalasini ham chetlab o'tadi va bloklovchi chaqiruvni thread'ga chiqaradi.
+    """
+    return llm.chat.completions.create(**kwargs)
+
+
 # ====== Timezone model ======
 #
 # TZ abbreviatura REGIONNI bildiradi (EST ham EDT ham = Eastern) — qish/yoz
@@ -407,7 +417,9 @@ If this is NOT a check-in/check-out or pickup/delivery confirmation message, ret
             # 429 (rate-limit) bo'lsa o'sha provayderni qisqa kutib qayta urinamiz.
             for attempt in range(3):
                 try:
-                    res = llm.chat.completions.create(
+                    res = await asyncio.to_thread(
+                        _llm_create,
+                        llm,
                         model=model,
                         messages=[
                             {"role": "system", "content": "You are a logistics data extractor. Return only valid JSON or null."},

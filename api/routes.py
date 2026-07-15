@@ -24,7 +24,7 @@ from db import (
     set_bol_accepted,
 )
 from db.connect import db_connect
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from groups import (
     get_group_company_id,
     get_group_driver,
@@ -49,6 +49,7 @@ from state import (
 )
 from tickets import ticket_status_api
 
+from .auth import require_api_key
 from .models import (
     AcceptedRequest,
     AcceptedResponse,
@@ -67,7 +68,9 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+# Butun control-plane router shared-secret guard ortida (audit v3 H2).
+# DARK-LAUNCH: kalit o'rnatilmagunicha no-op; MONITOR→ENFORCE config orqali.
+router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
 # ====== Messages ======
