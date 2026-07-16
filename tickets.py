@@ -30,6 +30,7 @@ from config import (
 from external import get_api_token, invalidate_token
 from groups import save_group_ticket_status
 from messaging import send_error_to_group
+from paperwork.gemini import gemini_text_completion
 from state import (
     FAILED_MESSAGES_QUEUE,
     GROUP_TICKET_MESSAGES,
@@ -38,7 +39,6 @@ from state import (
     GROUP_TICKET_TIMERS,
     HISTORY_SENT_MESSAGE_KEYS,
     bot,
-    client,
 )
 
 logger = logging.getLogger(__name__)
@@ -396,7 +396,7 @@ async def ticket_status_api(data: TicketStatusRequest):
 # ====== AI helpers (priority) ======
 
 async def detect_priority(text: str):
-    """OpenAI orqali xabar prioritetini aniqlash (high/medium/low)."""
+    """Gemini (flash-lite) orqali xabar prioritetini aniqlash (high/medium/low)."""
     try:
         prompt = f"""
         Analyze this message and determine its priority level for a logistics company.
@@ -409,16 +409,13 @@ async def detect_priority(text: str):
         Message: "{text}"
         Priority:
         """
-        res = await asyncio.to_thread(
-            lambda: client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": "Determine priority level. Reply with only one word."},
-                          {"role": "user", "content": prompt}],
-                max_tokens=5,
-                temperature=0.1,
-            )
+        raw = await gemini_text_completion(
+            "Determine priority level. Reply with only one word.",
+            prompt,
+            max_tokens=10,
+            temperature=0.1,
         )
-        priority = (res.choices[0].message.content or "").strip().lower()
+        priority = raw.lower()
         if priority in ["high", "medium", "low"]:
             return priority
         return "medium"

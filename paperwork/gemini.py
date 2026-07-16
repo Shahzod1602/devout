@@ -12,6 +12,7 @@ from config import (
     GEMINI_FALLBACK_ENABLE,
     GEMINI_FALLBACK_LOCATION,
     GEMINI_FALLBACK_MODEL,
+    GEMINI_TEXT_MODEL,
     VERTEX_LOCATION,
     VERTEX_PROJECT,
 )
@@ -155,6 +156,47 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
             raise
     # range tugashi mumkin emas (oxirgi urinishda raise bo'ladi), faqat tip uchun:
     raise RuntimeError("Gemini quota backoff retries exhausted")
+
+
+async def gemini_text_completion(
+    system: str,
+    prompt: str,
+    *,
+    max_tokens: int = 60,
+    temperature: float = 0.1,
+) -> str:
+    """Matnli (rasm'siz) Gemini chaqiruvi — sobiq gpt-4o-mini o'rnida
+    (classify_message / summarize_text / detect_priority).
+
+    2026-07-17: OpenAI hisobida insufficient_quota (kredit tugagan) — GEMINI_TEXT_MODEL
+    (flash-lite) ga ko'chirildi. Xatoda RAISE qiladi — chaqiruvchilarning mavjud
+    fail-closed try/except'lari o'z default'iga tushadi (classify→"chat",
+    priority→"medium", summarize→original). Har chaqiruv record_gemini_call'ga yoziladi.
+    """
+    loop = asyncio.get_event_loop()
+    call_start = time.time()
+    response = None
+    try:
+        response = await loop.run_in_executor(
+            None,
+            functools.partial(
+                get_genai_client().models.generate_content,
+                model=GEMINI_TEXT_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                    system_instruction=system,
+                ),
+            ),
+        )
+        latency_ms = int((time.time() - call_start) * 1000)
+        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=True)
+        return (response.text or "").strip()
+    except Exception:
+        latency_ms = int((time.time() - call_start) * 1000)
+        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=False)
+        raise
 
 
 async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: int) -> dict:

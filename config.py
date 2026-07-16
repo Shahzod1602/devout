@@ -76,6 +76,10 @@ GEMINI_BOT_MODEL = "gemini-3.5-flash"  # Gemini 3.5 Flash (GA; smarter + faster 
 GEMINI_FALLBACK_ENABLE = os.getenv("GEMINI_FALLBACK_ENABLE", "1").strip() == "1"
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash")
 GEMINI_FALLBACK_LOCATION = os.getenv("GEMINI_FALLBACK_LOCATION", "europe-west2")
+# Matnli helper'lar (classify/summary/priority, sobiq gpt-4o-mini) — 2026-07-17 OpenAI
+# hisobida insufficient_quota (kredit tugagan) sabab Gemini'ga ko'chirildi. A/B 55 keys:
+# flash-lite tugallanganlarida 44/44 to'g'ri; narx 4o-mini sinfida. Global-only model.
+GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.1-flash-lite")
 
 # === Error logger Telegram bot ===
 ERROR_BOT_TOKEN = _require_env("ERROR_BOT_TOKEN")

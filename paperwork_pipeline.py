@@ -37,9 +37,10 @@ from paperwork import (
     is_big_box_delivery,
     process_file,
 )
+from paperwork.gemini import gemini_text_completion
 from paperwork.pdf import MAX_PAGES
 from PIL import Image
-from state import GROUP_IMAGE_TIMEOUT_TASKS, GROUP_PENDING_IMAGES, bot, client
+from state import GROUP_IMAGE_TIMEOUT_TASKS, GROUP_PENDING_IMAGES, bot
 
 logger = logging.getLogger(__name__)
 
@@ -58,22 +59,19 @@ def _group_paperwork_lock(chat_id) -> asyncio.Lock:
 # ====== Lightweight LLM helpers ======
 
 async def summarize_text(text: str):
-    """6+ so'zli matnni qisqacha yig'ish (OpenAI gpt-4o-mini). Xato bo'lsa originalni qaytaradi."""
+    """6+ so'zli matnni qisqacha yig'ish (Gemini flash-lite). Xato bo'lsa originalni qaytaradi."""
     if not text:
         return text
     if len(text.split()) <= 6:
         return text
     try:
-        res = await asyncio.to_thread(
-            lambda: client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": "Summarize briefly but keep meaning."},
-                          {"role": "user", "content": text}],
-                max_tokens=60,
-                temperature=0.3,
-            )
+        summary = await gemini_text_completion(
+            "Summarize briefly but keep meaning.",
+            text,
+            max_tokens=60,
+            temperature=0.3,
         )
-        return (res.choices[0].message.content or "").strip()
+        return summary or text
     except Exception:
         logger.exception("❌ Summarize error")
         return text
@@ -132,19 +130,18 @@ async def classify_message(text: str):
 
         Message: "{text}"
         """
-        res = await asyncio.to_thread(
-            lambda: client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system",
-                           "content": "You triage Telegram messages from truck drivers for a logistics company. Reply with only one word from the specified categories."},
-                          {"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0.1,
-            )
+        # 2026-07-17: gpt-4o-mini → GEMINI_TEXT_MODEL (OpenAI insufficient_quota).
+        # A/B 55 keys: flash-lite tugallanganlarida 44/44 (3.5-flash@ew2: 54/55).
+        raw = await gemini_text_completion(
+            "You triage Telegram messages from truck drivers for a logistics company. "
+            "Reply with only one word from the specified categories.",
+            prompt,
+            max_tokens=20,
+            temperature=0.1,
         )
         # '"chat."' kabi punktuatsiyali javob avval valid ro'yxatdan o'tmay "updater"
         # bo'lib soxta ticket yaratardi — chetki qo'shtirnoq/nuqtani ham olamiz.
-        classification = (res.choices[0].message.content or "").strip().lower().strip('".')
+        classification = raw.lower().strip('".')
         valid_categories = ["chat", "dispatcher", "fleet", "safety", "insurance", "hr", "accounting", "updater", "eld"]
         if classification in valid_categories:
             return classification
