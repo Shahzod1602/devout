@@ -199,6 +199,44 @@ async def gemini_text_completion(
         raise
 
 
+async def gemini_transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
+    """Ovozli xabar transkripsiyasi — sobiq OpenAI whisper-1 o'rnida (2026-07-17,
+    OpenAI insufficient_quota). GEMINI_TEXT_MODEL audio-input'ni qo'llaydi (jonli
+    tekshirilgan: flash-lite audio/wav sinusga to'g'ri NO_SPEECH dedi). Xatoda
+    RAISE — chaqiruvchi (handle_voice) o'zi ushlab error-guruhga yozadi.
+    """
+    loop = asyncio.get_event_loop()
+    call_start = time.time()
+    response = None
+    # genai-sdk `contents` invariant-list kutadi — mavjud idiom: bare list (mypy uchun).
+    contents_parts: list = [
+        genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+        genai_types.Part.from_text(text=(
+            "Transcribe this voice message verbatim. Reply with ONLY the "
+            "transcribed text, no commentary. Keep the original language "
+            "(English, Uzbek, or Russian). If there is no speech, reply "
+            "with an empty string."
+        )),
+    ]
+    try:
+        response = await loop.run_in_executor(
+            None,
+            functools.partial(
+                get_genai_client().models.generate_content,
+                model=GEMINI_TEXT_MODEL,
+                contents=contents_parts,
+                config=genai_types.GenerateContentConfig(max_output_tokens=1000, temperature=0.0),
+            ),
+        )
+        latency_ms = int((time.time() - call_start) * 1000)
+        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=True)
+        return (response.text or "").strip()
+    except Exception:
+        latency_ms = int((time.time() - call_start) * 1000)
+        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=False)
+        raise
+
+
 async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: int) -> dict:
     """Gemini'dan bir marta ma'lumot olish (cost + latency tracking bilan).
 

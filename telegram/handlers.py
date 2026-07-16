@@ -44,6 +44,7 @@ from groups import (
     wait_for_server_and_check,
 )
 from messaging import send_action_log, send_error_to_group
+from paperwork.gemini import gemini_transcribe_audio
 from paperwork_pipeline import (
     _send_image_prompt,
     build_pdf_from_images,
@@ -62,7 +63,6 @@ from state import (
     STARTED_GROUPS,
     TOKEN_FAILED_ATTEMPTS,
     bot,
-    client,
 )
 from tickets import (
     create_message_link,
@@ -1126,8 +1126,6 @@ async def handle_documents(msg: types.Message):
 @router.message(F.voice | F.audio)
 async def handle_voice(msg: types.Message):
     """Ovozli xabar yoki audio fayldan checkin/checkout parse qilish."""
-    from io import BytesIO
-
     chat_id = msg.chat.id
     user_id = msg.from_user.id
 
@@ -1153,15 +1151,9 @@ async def handle_voice(msg: types.Message):
         file_bytes = await bot.download_file(file.file_path)
         file_bytes_value = file_bytes.getvalue()
 
-        audio_file = BytesIO(file_bytes_value)
-        audio_file.name = "voice.ogg"
-
-        loop = asyncio.get_event_loop()
-        transcript = await loop.run_in_executor(
-            None,
-            lambda: client.audio.transcriptions.create(model="whisper-1", file=audio_file),
-        )
-        text = transcript.text.strip()
+        # 2026-07-17: OpenAI whisper-1 → Gemini (insufficient_quota — kredit tugagan).
+        # Telegram voice = OGG/Opus; Gemini audio/ogg'ni qo'llaydi.
+        text = (await gemini_transcribe_audio(file_bytes_value)).strip()
         logger.info("🎤 Voice transcribed: %s", text)
 
         if not text:
