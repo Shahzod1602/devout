@@ -347,6 +347,15 @@ async def group_deleted_webhook(group_id: str):
         _d.pop(group_id_str, None)
 
     async with db_connect(DB_PATH) as db:
+        # #20 (audit v3): destructive wipe — oldin NIMA o'chirilayotganini audit-log qilamiz
+        # (recovery izi). Endpoint #6 auth guard ortida. To'liq soft-delete/DB-backup mahsulot
+        # qarorini + disk hisobini kutadi (deferred — #20 qolgan qismi).
+        _counts = {}
+        for _t in ("loads", "bols", "pods"):
+            async with db.execute(f"SELECT COUNT(*) FROM {_t} WHERE group_id=?", (group_id_str,)) as _c:
+                _r = await _c.fetchone()
+            _counts[_t] = _r[0] if _r else 0
+        logger.warning("🗑️ AUDIT group-delete %s: o'chirilmoqda %s", group_id_str, _counts)
         await db.execute("DELETE FROM groups WHERE group_id=?", (group_id_str,))
         await db.execute("DELETE FROM loads WHERE group_id=?", (group_id_str,))
         await db.execute("DELETE FROM bols WHERE group_id=?", (group_id_str,))

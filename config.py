@@ -128,6 +128,12 @@ PO_MATCH_ENFORCE = os.environ.get("PO_MATCH_ENFORCE", "1").strip() == "1"
 # ko'rsatiladi, qabul eski tartibda davom etadi (kill-switch).
 PAGE_COUNT_ENFORCE = os.environ.get("PAGE_COUNT_ENFORCE", "1").strip() == "1"
 
+# BOL/POD PDF blob'lari (bols/pods.file_blob) load tugagach clear_load_from_cache
+# bilan o'chadi, lekin tugamagan/osilib qolgan loadlarniki cheksiz o'sib DB'ni
+# shishiradi (audit v3 #19; prod'da 2.7GB kuzatildi). Startup'da saved_at bo'yicha
+# shu kundan eski blob'lar tozalanadi (stats-retention naqshi). 0 → TTL o'chiq.
+PAPERWORK_BLOB_TTL_DAYS = int(os.environ.get("PAPERWORK_BLOB_TTL_DAYS", "60"))
+
 # === Admin panel ===
 # ADMIN_TOKEN — /admin panelining kirish kaliti. O'rnatilmagan bo'lsa panel
 # BUTUNLAY O'CHIQ (503) — audit H1 (authsiz control-plane) takrorlanmasin.

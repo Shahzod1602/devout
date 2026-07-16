@@ -1,11 +1,38 @@
 """Async CRUD on bot_data.db: loads, bols, pods, groups, company_permissions."""
 import logging
 
-from config import DB_PATH
+from config import DB_PATH, PAPERWORK_BLOB_TTL_DAYS
 
 from db.connect import db_connect
 
 logger = logging.getLogger(__name__)
+
+
+async def prune_expired_blobs() -> None:
+    """Eskirgan BOL/POD blob'larini o'chirish (audit v3 #19) — startup'da chaqiriladi.
+
+    Tugamagan/osilib qolgan loadlarning `file_blob`'lari DB'ni cheksiz shishiradi.
+    `saved_at` PAPERWORK_BLOB_TTL_DAYS dan eski qatorlar o'chiriladi; keyin
+    `wal_checkpoint(TRUNCATE)` WAL'ni qisqartiradi. O'chirilgan sahifalar freelist'ga
+    o'tib qayta ishlatiladi (fayl o'smaydi); mavjud shishgan faylni qisqartirish
+    uchun bir martalik `VACUUM` alohida (og'ir) — bu funksiya faqat O'SISHNI to'xtatadi.
+    TTL 0 bo'lsa o'tkazib yuboriladi.
+    """
+    if PAPERWORK_BLOB_TTL_DAYS <= 0:
+        return
+    cutoff = f"-{PAPERWORK_BLOB_TTL_DAYS} days"
+    try:
+        async with db_connect(DB_PATH) as db:
+            cur = await db.execute("DELETE FROM bols WHERE saved_at < datetime('now', ?)", (cutoff,))
+            n_bols = cur.rowcount
+            cur = await db.execute("DELETE FROM pods WHERE saved_at < datetime('now', ?)", (cutoff,))
+            n_pods = cur.rowcount
+            await db.commit()
+            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        if (n_bols or 0) > 0 or (n_pods or 0) > 0:
+            logger.info("🧹 Blob TTL: %d BOL + %d POD (>%dd) tozalandi", n_bols or 0, n_pods or 0, PAPERWORK_BLOB_TTL_DAYS)
+    except Exception:
+        logger.warning("blob TTL prune failed", exc_info=True)
 
 
 # ====== loads ======
@@ -86,8 +113,10 @@ async def clear_all_loads_for_group(group_id):
 
 async def add_bol_to_cache(group_id, load_id, message_id, file_bytes: bytes):
     async with db_connect(DB_PATH) as db:
+        # #22: INSERT OR IGNORE — bir xil (group_id,load_id,message_id) dublikat
+        # yozilmasin (UNIQUE indeks + #13 lock bilan idempotentlik defense-in-depth).
         await db.execute(
-            "INSERT INTO bols (group_id, load_id, message_id, file_blob) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO bols (group_id, load_id, message_id, file_blob) VALUES (?, ?, ?, ?)",
             (str(group_id), str(load_id), message_id, file_bytes),
         )
         await db.commit()
@@ -184,8 +213,9 @@ async def remove_last_bol_for_load(group_id, load_id):
 
 async def add_pod_to_cache(group_id, load_id, message_id, file_bytes: bytes):
     async with db_connect(DB_PATH) as db:
+        # #22: INSERT OR IGNORE — dublikat POD yozilmasin (#13 lock bilan idempotentlik).
         await db.execute(
-            "INSERT INTO pods (group_id, load_id, message_id, file_blob) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO pods (group_id, load_id, message_id, file_blob) VALUES (?, ?, ?, ?)",
             (str(group_id), str(load_id), message_id, file_bytes),
         )
         await db.commit()

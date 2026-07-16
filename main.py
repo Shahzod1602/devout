@@ -30,6 +30,9 @@ from tickets import poll_backend_ticket_status, retry_failed_messages
 
 logger = logging.getLogger(__name__)
 
+# Fire-and-forget fon task'lariga ref (GC'lanmasin) — #19 blob-prune shu yerda.
+_BG_TASKS: set = set()
+
 
 async def run_bot():
     """Aiogram dispatcher'ni start qiladi."""
@@ -66,6 +69,14 @@ async def main():
 
     retry_task = asyncio.create_task(retry_failed_messages())
     logger.info("🔁 Failed messages retry worker started")
+
+    # #19: eskirgan BOL/POD blob'larni FON'da tozalaymiz — katta DB'da (prod 2.7GB)
+    # bloklovchi prune startup/health-gate'ni ushlab qolmasin. Bir martalik, idempotent.
+    # Fire-and-forget naqsh: set'da ref saqlaymiz (GC'lanmasin), tugagach o'zini olib tashlaydi.
+    from db.operations import prune_expired_blobs
+    _bg = asyncio.create_task(prune_expired_blobs())
+    _BG_TASKS.add(_bg)
+    _bg.add_done_callback(_BG_TASKS.discard)
 
     config = uvicorn.Config(
         app=app,
