@@ -13,6 +13,8 @@ router = APIRouter()
 
 # Pricing per 1M tokens (input, output) — Google narxlarini yangilab turing.
 GEMINI_PRICING_PER_1M = [
+    # DIQQAT: substring-moslash — aniqroq (uzunroq) nomlar QISQAlaridan OLDIN tursin.
+    ("gemini-3.1-flash-lite", 0.25, 1.50),  # GEMINI_TEXT_MODEL (classify/summary/priority)
     ("gemini-3.5-flash", 1.50, 9.00),
     ("gemini-3-flash",   0.50, 3.00),
     ("gemini-3-pro",     2.00, 12.00),
