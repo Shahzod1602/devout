@@ -68,6 +68,13 @@ VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "global")  # gemini-3.5-flash is 
 
 # === Gemini model ===
 GEMINI_BOT_MODEL = "gemini-3.5-flash"  # Gemini 3.5 Flash (GA; smarter + faster than 3-flash, better extraction)
+# 2026-07-17 fallback: Google global-endpoint flash-sinf sig'im inqirozi (07-15 dan, 3 loyihada
+# tasdiqlangan — kvota EMAS, DSQ kontensiya; forum: discuss.ai.google.dev/t/174959). Asosiy model
+# 2 marta ketma-ket 429 bersa zaxira model/regionga o'tamiz (jonli probe: europe-west4 OK).
+# Google bo'shagach har yangi so'rov yana asosiydan boshlaydi (yopishqoq holat yo'q).
+GEMINI_FALLBACK_ENABLE = os.getenv("GEMINI_FALLBACK_ENABLE", "1").strip() == "1"
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+GEMINI_FALLBACK_LOCATION = os.getenv("GEMINI_FALLBACK_LOCATION", "europe-west4")
 
 # === Error logger Telegram bot ===
 ERROR_BOT_TOKEN = _require_env("ERROR_BOT_TOKEN")

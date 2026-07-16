@@ -1,12 +1,20 @@
 """Gemini SDK setup + low-level call wrapper for paperwork analysis."""
 import asyncio
+import functools
 import json
 import logging
 import random
 import time
 from io import BytesIO
 
-from config import GEMINI_BOT_MODEL, VERTEX_LOCATION, VERTEX_PROJECT
+from config import (
+    GEMINI_BOT_MODEL,
+    GEMINI_FALLBACK_ENABLE,
+    GEMINI_FALLBACK_LOCATION,
+    GEMINI_FALLBACK_MODEL,
+    VERTEX_LOCATION,
+    VERTEX_PROJECT,
+)
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -46,6 +54,22 @@ def get_genai_client() -> genai.Client:
     return _genai_client
 
 
+# Zaxira client — boshqa region (global emas), faqat fallback yo'lida ishlatiladi.
+_fallback_client: genai.Client | None = None
+
+
+def get_fallback_client() -> genai.Client:
+    """Fallback region uchun Vertex client (lazy)."""
+    global _fallback_client
+    if _fallback_client is None:
+        _fallback_client = genai.Client(
+            vertexai=True,
+            project=VERTEX_PROJECT,
+            location=GEMINI_FALLBACK_LOCATION,
+        )
+    return _fallback_client
+
+
 def parse_gemini_json(raw: str) -> dict:
     """Gemini javobidan JSON ajratib olish (markdown fences, prefix/suffix tozalanadi)."""
     raw = raw.strip()
@@ -77,16 +101,24 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
 
     Har bir urinish (muvaffaqiyatli yoki yo'q) `record_gemini_call` orqali yoziladi.
     Kvota bilan bog'liq bo'lmagan xatolar darrov qayta tashlanadi (retry qilinmaydi).
+
+    2026-07-17 fallback: asosiy model 2 marta ketma-ket 429 bersa (Google global-endpoint
+    sig'im inqirozi — kvota emas), qolgan urinishlar zaxira model/regionda davom etadi.
+    Holat yopishqoq EMAS: har yangi so'rov yana asosiy modeldan boshlaydi.
     """
     loop = asyncio.get_event_loop()
+    use_fallback = False
     for quota_retry in range(_QUOTA_MAX_RETRIES):
+        client = get_fallback_client() if use_fallback else get_genai_client()
+        model = GEMINI_FALLBACK_MODEL if use_fallback else GEMINI_BOT_MODEL
         call_start = time.time()
         response = None
         try:
             response = await loop.run_in_executor(
                 None,
-                lambda: get_genai_client().models.generate_content(
-                    model=GEMINI_BOT_MODEL,
+                functools.partial(
+                    client.models.generate_content,
+                    model=model,
                     # genai-sdk `contents` expects invariant list; mixed str+Part is OK at runtime
                     contents=[text_prompt, *image_parts],
                     # temperature=0.2: BOL self-consistency avval Vertex default (~1.0) da
@@ -97,19 +129,29 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
                 ),
             )
             latency_ms = int((time.time() - call_start) * 1000)
-            await record_gemini_call(GEMINI_BOT_MODEL, response, latency_ms, success=True)
+            await record_gemini_call(model, response, latency_ms, success=True)
             return response
         except Exception as exc:
             latency_ms = int((time.time() - call_start) * 1000)
-            await record_gemini_call(GEMINI_BOT_MODEL, response, latency_ms, success=False)
-            if _is_quota_error(exc) and quota_retry < _QUOTA_MAX_RETRIES - 1:
-                delay = min(_QUOTA_BACKOFF_BASE * (2 ** quota_retry), _QUOTA_BACKOFF_CAP) + random.uniform(0, 1)
-                logger.warning(
-                    "⏳ Gemini 429 RESOURCE_EXHAUSTED — backoff %.1fs (urinish %d/%d)",
-                    delay, quota_retry + 1, _QUOTA_MAX_RETRIES,
-                )
-                await asyncio.sleep(delay)
-                continue
+            await record_gemini_call(model, response, latency_ms, success=False)
+            if _is_quota_error(exc):
+                if not use_fallback and GEMINI_FALLBACK_ENABLE and quota_retry >= 1:
+                    # 2 urinish ham throttle — zaxiraga darhol (sleep'siz) o'tamiz.
+                    use_fallback = True
+                    logger.warning(
+                        "🔀 Gemini FALLBACK: %s throttled → %s@%s (urinish %d/%d)",
+                        GEMINI_BOT_MODEL, GEMINI_FALLBACK_MODEL, GEMINI_FALLBACK_LOCATION,
+                        quota_retry + 1, _QUOTA_MAX_RETRIES,
+                    )
+                    continue
+                if quota_retry < _QUOTA_MAX_RETRIES - 1:
+                    delay = min(_QUOTA_BACKOFF_BASE * (2 ** quota_retry), _QUOTA_BACKOFF_CAP) + random.uniform(0, 1)
+                    logger.warning(
+                        "⏳ Gemini 429 RESOURCE_EXHAUSTED — backoff %.1fs (urinish %d/%d)",
+                        delay, quota_retry + 1, _QUOTA_MAX_RETRIES,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
             raise
     # range tugashi mumkin emas (oxirgi urinishda raise bo'ladi), faqat tip uchun:
     raise RuntimeError("Gemini quota backoff retries exhausted")
