@@ -193,7 +193,18 @@ async def send_message_to_history_api(group_id: str, writer_name: str, message: 
                         logger.info("✅ [HISTORY API] Sent | group=%s | writer=%s", group_id, writer_name)
                         return True
                     elif resp.status == 404:
-                        logger.warning("⚠️ [HISTORY API] Not found [404] | group=%s | writer=%s | Dropping message", group_id, writer_name)
+                        # 2026-07-17 (product qarori): 404 = backend'da bu guruh uchun ochiq
+                        # history/ticket YO'Q — lokal "todo" phantom bo'lib qolgan. Gate'ni
+                        # darhol "done"ga tushiramiz: keyingi xabarlar behuda POST qilinmaydi
+                        # (avval 2 soatlik stale-TTL kutilardi, har xabarda 404-warning yog'ardi).
+                        # Yangi ticket ochilsa gate qaytadan "todo" bo'ladi — hech narsa yo'qolmaydi.
+                        logger.warning(
+                            "⚠️ [HISTORY API] Not found [404] | group=%s | writer=%s | "
+                            "Dropping message + ticket status → done (phantom todo yopildi)",
+                            group_id, writer_name,
+                        )
+                        GROUP_TICKET_STATUS.pop(str(group_id), None)
+                        save_group_ticket_status(group_id, "done")
                         return False
                     elif resp.status in (401, 403):
                         # Token muddati o'tgan — yangilab, keyingi urinishда yangi token bilan.
