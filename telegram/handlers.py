@@ -750,6 +750,20 @@ async def generic_text_handler(msg: types.Message):
 
     await send_action_log(chat_id, f"Message from {msg.from_user.full_name}: {text[:50]}...")
 
+    # Driver-darvoza LLM'dan OLDIN: faqat driver xabarlari classify/ticket oqimiga
+    # kiradi. Non-driver (dispatcher va b.) xabari LLM'siz to'g'ridan-to'g'ri
+    # history'ga — ilgari muammo-deb-klassifikatsiyalangani butunlay yo'qolardi,
+    # "chat" degani esa baribir history'ga tushardi.
+    if not is_any_driver(chat_id, user_id):
+        if not history_already_sent(msg):
+            await send_message_to_history_api(
+                group_id=chat_id,
+                writer_name=msg.from_user.full_name,
+                message=text,
+            )
+            logger.info("💬 Non-driver message from %s sent to history API (no LLM)", user_id)
+        return
+
     try:
         dep = await classify_message(text)
     except Exception:
@@ -796,26 +810,21 @@ async def generic_text_handler(msg: types.Message):
             logger.info("💬 Chat message sent to history API for group %s", chat_id)
         return
 
-    if not is_any_driver(chat_id, user_id):
-        logger.warning("⚠️ Non-driver message. User %s is not a driver. Ticket will not be sent.", user_id)
-        return
-
     group_id_str = str(chat_id)
     if group_id_str in GROUP_TICKET_STATUS:
         ticket_status = GROUP_TICKET_STATUS[group_id_str].get("status")
         if ticket_status == "done":
             return
 
-    if is_any_driver(chat_id, user_id):
-        can_send, remaining = await check_driver_cooldown(user_id)
-        if not can_send:
-            logger.debug("⏳ Driver %s cooldown: %d seconds remaining", user_id, int(remaining))
-            return
-        # CD-2 (audit v3 #14): cooldown'ni DARHOL reserve qilamiz — check↔send orasidagi
-        # TOCTOU'ni yopadi (driver 2 xabarni tez ketma-ket yuborsa, ilgari ikkalasi ham
-        # cooldown'dan o'tib 2 ta ticket yaratardi). check→reserve orasida await-suspend
-        # yo'q, shuning uchun atomik; send muvaffaqiyatsiz bo'lsa pastda bekor qilinadi.
-        await update_driver_cooldown(user_id)
+    can_send, remaining = await check_driver_cooldown(user_id)
+    if not can_send:
+        logger.debug("⏳ Driver %s cooldown: %d seconds remaining", user_id, int(remaining))
+        return
+    # CD-2 (audit v3 #14): cooldown'ni DARHOL reserve qilamiz — check↔send orasidagi
+    # TOCTOU'ni yopadi (driver 2 xabarni tez ketma-ket yuborsa, ilgari ikkalasi ham
+    # cooldown'dan o'tib 2 ta ticket yaratardi). check→reserve orasida await-suspend
+    # yo'q, shuning uchun atomik; send muvaffaqiyatsiz bo'lsa pastda bekor qilinadi.
+    await update_driver_cooldown(user_id)
 
     company_id = await get_or_fetch_company_id(chat_id)
     if company_id:
