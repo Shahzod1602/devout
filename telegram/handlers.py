@@ -819,6 +819,16 @@ async def generic_text_handler(msg: types.Message):
     can_send, remaining = await check_driver_cooldown(user_id)
     if not can_send:
         logger.debug("⏳ Driver %s cooldown: %d seconds remaining", user_id, int(remaining))
+        # CD-3: cooldown-bloklangan driver xabari ilgari JIMGINA yo'qolardi — ticket
+        # ham, history ham emas (ayniqsa boshqa guruhdagi ticket'dan keyin, cooldown
+        # driver bo'yicha global). Endi history'ga tushadi — dispatcher baribir ko'radi.
+        if not history_already_sent(msg):
+            await send_message_to_history_api(
+                group_id=chat_id,
+                writer_name=msg.from_user.full_name,
+                message=text,
+            )
+            logger.info("💬 Cooldown-blocked driver message from %s sent to history API", user_id)
         return
     # CD-2 (audit v3 #14): cooldown'ni DARHOL reserve qilamiz — check↔send orasidagi
     # TOCTOU'ni yopadi (driver 2 xabarni tez ketma-ket yuborsa, ilgari ikkalasi ham
