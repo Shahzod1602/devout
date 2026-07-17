@@ -158,6 +158,69 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
     raise RuntimeError("Gemini quota backoff retries exhausted")
 
 
+# Text-yo'lak (classify/summarize/priority/voice) 429-himoyasi — rasm-yo'lakdagi
+# _generate_with_backoff naqshining chat-oqimiga mos QISQA varianti. classify'ni
+# message-handler await qiladi, shuning uchun 45s oyna mumkin emas: yakka DSQ
+# throttle'lar soniyalarda o'tadi, ommaviy inqirozda esa zaxira region baribir
+# darhol javob beradi — uzoq kutishning foydasi yo'q.
+_TEXT_MAX_RETRIES = 4      # 2 asosiy (GEMINI_TEXT_MODEL@global) + 2 zaxira (regional)
+_TEXT_BACKOFF_BASE = 1.0   # 1s, 2s (cap) + 0..0.5s jitter — worst-case ~3.5s kutish
+_TEXT_BACKOFF_CAP = 2.0
+
+
+async def _text_generate_with_fallback(contents, config: genai_types.GenerateContentConfig) -> str:
+    """GEMINI_TEXT_MODEL chaqiruvi — 429'da qisqa backoff, 2 ketma-ket throttle'dan
+    keyin GEMINI_FALLBACK_MODEL@GEMINI_FALLBACK_LOCATION bilan davom etadi.
+
+    Rasm-yo'lak bilan bir xil semantika: yopishqoq EMAS (har yangi so'rov asosiy
+    modeldan boshlaydi), har urinish record_gemini_call'ga HAQIQIY model bilan
+    yoziladi, kvota bo'lmagan xato DARROV raise — chaqiruvchilarning fail-closed
+    default'lari (classify→"chat", priority→"medium", summarize→original) o'z kuchida.
+    """
+    loop = asyncio.get_event_loop()
+    use_fallback = False
+    for attempt in range(_TEXT_MAX_RETRIES):
+        client = get_fallback_client() if use_fallback else get_genai_client()
+        model = GEMINI_FALLBACK_MODEL if use_fallback else GEMINI_TEXT_MODEL
+        call_start = time.time()
+        response = None
+        try:
+            response = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    client.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=config,
+                ),
+            )
+            latency_ms = int((time.time() - call_start) * 1000)
+            await record_gemini_call(model, response, latency_ms, success=True)
+            return (response.text or "").strip()
+        except Exception as exc:
+            latency_ms = int((time.time() - call_start) * 1000)
+            await record_gemini_call(model, response, latency_ms, success=False)
+            if is_quota_error(exc) and attempt < _TEXT_MAX_RETRIES - 1:
+                if not use_fallback and GEMINI_FALLBACK_ENABLE and attempt >= 1:
+                    # 2 urinish ham throttle — zaxiraga sleep'siz o'tamiz.
+                    use_fallback = True
+                    logger.warning(
+                        "🔀 Gemini TEXT fallback: %s throttled → %s@%s (urinish %d/%d)",
+                        GEMINI_TEXT_MODEL, GEMINI_FALLBACK_MODEL, GEMINI_FALLBACK_LOCATION,
+                        attempt + 1, _TEXT_MAX_RETRIES,
+                    )
+                    continue
+                delay = min(_TEXT_BACKOFF_BASE * (2 ** attempt), _TEXT_BACKOFF_CAP) + random.uniform(0, 0.5)
+                logger.warning(
+                    "⏳ Gemini TEXT 429 — backoff %.1fs (urinish %d/%d, model=%s)",
+                    delay, attempt + 1, _TEXT_MAX_RETRIES, model,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
+    raise RuntimeError("Gemini text quota retries exhausted")  # yetib kelmaydi (oxirgisi raise qiladi)
+
+
 async def gemini_text_completion(
     system: str,
     prompt: str,
@@ -169,45 +232,28 @@ async def gemini_text_completion(
     (classify_message / summarize_text / detect_priority).
 
     2026-07-17: OpenAI hisobida insufficient_quota (kredit tugagan) — GEMINI_TEXT_MODEL
-    (flash-lite) ga ko'chirildi. Xatoda RAISE qiladi — chaqiruvchilarning mavjud
-    fail-closed try/except'lari o'z default'iga tushadi (classify→"chat",
-    priority→"medium", summarize→original). Har chaqiruv record_gemini_call'ga yoziladi.
+    (flash-lite) ga ko'chirildi. 429'da _text_generate_with_fallback qisqa retry +
+    regional zaxira qiladi; boshqa xatoda RAISE — chaqiruvchilarning mavjud
+    fail-closed try/except'lari o'z default'iga tushadi.
     """
-    loop = asyncio.get_event_loop()
-    call_start = time.time()
-    response = None
-    try:
-        response = await loop.run_in_executor(
-            None,
-            functools.partial(
-                get_genai_client().models.generate_content,
-                model=GEMINI_TEXT_MODEL,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    max_output_tokens=max_tokens,
-                    temperature=temperature,
-                    system_instruction=system,
-                ),
-            ),
-        )
-        latency_ms = int((time.time() - call_start) * 1000)
-        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=True)
-        return (response.text or "").strip()
-    except Exception:
-        latency_ms = int((time.time() - call_start) * 1000)
-        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=False)
-        raise
+    return await _text_generate_with_fallback(
+        prompt,
+        genai_types.GenerateContentConfig(
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+            system_instruction=system,
+        ),
+    )
 
 
 async def gemini_transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     """Ovozli xabar transkripsiyasi — sobiq OpenAI whisper-1 o'rnida (2026-07-17,
     OpenAI insufficient_quota). GEMINI_TEXT_MODEL audio-input'ni qo'llaydi (jonli
-    tekshirilgan: flash-lite audio/wav sinusga to'g'ri NO_SPEECH dedi). Xatoda
-    RAISE — chaqiruvchi (handle_voice) o'zi ushlab error-guruhga yozadi.
+    tekshirilgan: flash-lite audio/wav sinusga to'g'ri NO_SPEECH dedi). 429'da
+    _text_generate_with_fallback retry+zaxira qiladi (3.5-flash ham multimodal —
+    audio qo'llaydi); boshqa xatoda RAISE — chaqiruvchi (handle_voice) o'zi ushlab
+    error-guruhga yozadi.
     """
-    loop = asyncio.get_event_loop()
-    call_start = time.time()
-    response = None
     # genai-sdk `contents` invariant-list kutadi — mavjud idiom: bare list (mypy uchun).
     contents_parts: list = [
         genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
@@ -218,23 +264,10 @@ async def gemini_transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/og
             "with an empty string."
         )),
     ]
-    try:
-        response = await loop.run_in_executor(
-            None,
-            functools.partial(
-                get_genai_client().models.generate_content,
-                model=GEMINI_TEXT_MODEL,
-                contents=contents_parts,
-                config=genai_types.GenerateContentConfig(max_output_tokens=1000, temperature=0.0),
-            ),
-        )
-        latency_ms = int((time.time() - call_start) * 1000)
-        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=True)
-        return (response.text or "").strip()
-    except Exception:
-        latency_ms = int((time.time() - call_start) * 1000)
-        await record_gemini_call(GEMINI_TEXT_MODEL, response, latency_ms, success=False)
-        raise
+    return await _text_generate_with_fallback(
+        contents_parts,
+        genai_types.GenerateContentConfig(max_output_tokens=1000, temperature=0.0),
+    )
 
 
 async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: int) -> dict:
