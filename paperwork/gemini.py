@@ -97,6 +97,25 @@ def is_quota_error(exc: Exception) -> bool:
 _is_quota_error = is_quota_error  # ichki nom saqlanadi (mavjud chaqiruvlar uchun)
 
 
+def is_transient_server_error(exc: Exception) -> bool:
+    """Vertex 5xx (502/503/504) — transient server/endpoint xatosi, retry'ga loyiq.
+
+    2026-07-18: global endpoint 502 Bad Gateway (HTML sahifa bilan) BOL-check'ni
+    yiqitgan edi — SDK'ning ichki tenacity retry'i ham yetmagan. Endi 429 bilan
+    bir xil yo'l: backoff + 2 urinishdan keyin regional zaxira.
+    """
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and code >= 500:
+        return True
+    text = str(exc)
+    return "Bad Gateway" in text or "Service Unavailable" in text or "UNAVAILABLE" in text
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """429 (kvota/DSQ) YOKI 5xx — ikkalasida ham backoff+fallback ishlaydi."""
+    return is_quota_error(exc) or is_transient_server_error(exc)
+
+
 async def _generate_with_backoff(text_prompt: str, image_parts: list):
     """generate_content chaqiruvi — 429/RESOURCE_EXHAUSTED bo'lsa backoff bilan retry.
 
@@ -135,12 +154,12 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
         except Exception as exc:
             latency_ms = int((time.time() - call_start) * 1000)
             await record_gemini_call(model, response, latency_ms, success=False)
-            if _is_quota_error(exc):
+            if _is_retryable_error(exc):
                 if not use_fallback and GEMINI_FALLBACK_ENABLE and quota_retry >= 1:
-                    # 2 urinish ham throttle — zaxiraga darhol (sleep'siz) o'tamiz.
+                    # 2 urinish ham throttle/5xx — zaxiraga darhol (sleep'siz) o'tamiz.
                     use_fallback = True
                     logger.warning(
-                        "🔀 Gemini FALLBACK: %s throttled → %s@%s (urinish %d/%d)",
+                        "🔀 Gemini FALLBACK: %s throttled/5xx → %s@%s (urinish %d/%d)",
                         GEMINI_BOT_MODEL, GEMINI_FALLBACK_MODEL, GEMINI_FALLBACK_LOCATION,
                         quota_retry + 1, _QUOTA_MAX_RETRIES,
                     )
@@ -148,7 +167,7 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
                 if quota_retry < _QUOTA_MAX_RETRIES - 1:
                     delay = min(_QUOTA_BACKOFF_BASE * (2 ** quota_retry), _QUOTA_BACKOFF_CAP) + random.uniform(0, 1)
                     logger.warning(
-                        "⏳ Gemini 429 RESOURCE_EXHAUSTED — backoff %.1fs (urinish %d/%d)",
+                        "⏳ Gemini 429/5xx — backoff %.1fs (urinish %d/%d)",
                         delay, quota_retry + 1, _QUOTA_MAX_RETRIES,
                     )
                     await asyncio.sleep(delay)
@@ -179,6 +198,12 @@ async def _text_generate_with_fallback(contents, config: genai_types.GenerateCon
     """
     loop = asyncio.get_event_loop()
     use_fallback = False
+    # Zaxira (3.5-flash) — thinking-model: kichik max_output_tokens'da (classify=20)
+    # butun budjetni thinking yeb, matn BO'SH qaytadi (empirik: 3/3 bo'sh; budget=0
+    # bilan 3/3 'pong'). Text-vazifalar thinking talab qilmaydi — o'chirib yuboramiz.
+    fallback_config = config.model_copy(
+        update={"thinking_config": genai_types.ThinkingConfig(thinking_budget=0)},
+    )
     for attempt in range(_TEXT_MAX_RETRIES):
         client = get_fallback_client() if use_fallback else get_genai_client()
         model = GEMINI_FALLBACK_MODEL if use_fallback else GEMINI_TEXT_MODEL
@@ -191,7 +216,7 @@ async def _text_generate_with_fallback(contents, config: genai_types.GenerateCon
                     client.models.generate_content,
                     model=model,
                     contents=contents,
-                    config=config,
+                    config=fallback_config if use_fallback else config,
                 ),
             )
             latency_ms = int((time.time() - call_start) * 1000)
@@ -200,19 +225,19 @@ async def _text_generate_with_fallback(contents, config: genai_types.GenerateCon
         except Exception as exc:
             latency_ms = int((time.time() - call_start) * 1000)
             await record_gemini_call(model, response, latency_ms, success=False)
-            if is_quota_error(exc) and attempt < _TEXT_MAX_RETRIES - 1:
+            if _is_retryable_error(exc) and attempt < _TEXT_MAX_RETRIES - 1:
                 if not use_fallback and GEMINI_FALLBACK_ENABLE and attempt >= 1:
-                    # 2 urinish ham throttle — zaxiraga sleep'siz o'tamiz.
+                    # 2 urinish ham throttle/5xx — zaxiraga sleep'siz o'tamiz.
                     use_fallback = True
                     logger.warning(
-                        "🔀 Gemini TEXT fallback: %s throttled → %s@%s (urinish %d/%d)",
+                        "🔀 Gemini TEXT fallback: %s throttled/5xx → %s@%s (urinish %d/%d)",
                         GEMINI_TEXT_MODEL, GEMINI_FALLBACK_MODEL, GEMINI_FALLBACK_LOCATION,
                         attempt + 1, _TEXT_MAX_RETRIES,
                     )
                     continue
                 delay = min(_TEXT_BACKOFF_BASE * (2 ** attempt), _TEXT_BACKOFF_CAP) + random.uniform(0, 0.5)
                 logger.warning(
-                    "⏳ Gemini TEXT 429 — backoff %.1fs (urinish %d/%d, model=%s)",
+                    "⏳ Gemini TEXT 429/5xx — backoff %.1fs (urinish %d/%d, model=%s)",
                     delay, attempt + 1, _TEXT_MAX_RETRIES, model,
                 )
                 await asyncio.sleep(delay)

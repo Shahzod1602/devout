@@ -62,8 +62,19 @@ def remember_paperwork_msg_link(ref, chat_id, message_id) -> None:
         PAPERWORK_MSG_LINKS.pop(next(iter(PAPERWORK_MSG_LINKS)), None)
 
 
+# Telegram xabar limiti 4096 — escape matnni kengaytirishi mumkin, shuning uchun
+# ESCAPED holatda kesamiz (xom HTML sahifa, masalan Vertex 502'niki, 2-3KB keladi).
+_ERROR_MSG_MAX = 3500
+
+
 async def send_error_to_group(message: str, group_id=None):
-    """ERROR_GROUP_ID'ga xato xabari yuborish. Guruh nomi mavjud bo'lsa, label sifatida qo'shadi."""
+    """ERROR_GROUP_ID'ga xato xabari yuborish. Guruh nomi mavjud bo'lsa, label sifatida qo'shadi.
+
+    MSG-1 (2026-07-18): `message` va guruh nomi HAR DOIM html.escape qilinadi —
+    chaqiruvchilar xom exception matnini beradi (masalan Vertex 502'ning
+    <!DOCTYPE html> sahifasi), escape'siz Telegram "can't parse entities" bilan
+    xato-hisobotning O'ZINI rad etardi. Uzuni 4096-limitga sig'ishi uchun kesiladi.
+    """
     if not ERROR_GROUP_ID:
         return
     # Late import: `groups` ham bu modulni import qiladi (circular dependency'ni
@@ -77,12 +88,16 @@ async def send_error_to_group(message: str, group_id=None):
             data = load_all_group_tokens()
             group_name = data.get(gid_str, {}).get("group_name", "")
             if group_name:
-                group_label = f" <b>[{group_name}]</b>"
+                group_label = f" <b>[{html.escape(group_name)}]</b>"
             else:
                 group_label = f" <b>[group:{gid_str}]</b>"
+        safe_message = html.escape(message)
+        if len(safe_message) > _ERROR_MSG_MAX:
+            # Kesim chala entity ("&am…") qoldirmasin — oxiridagi to'liqsiz entity'ni olib tashlaymiz.
+            safe_message = re.sub(r"&[#a-zA-Z0-9]*$", "", safe_message[:_ERROR_MSG_MAX]) + "… [kesildi]"
         await error_bot.send_message(
             ERROR_GROUP_ID,
-            f"❌ <b>[{ENV_LABEL}]</b>{group_label} {message}\n🕐 {now}",
+            f"❌ <b>[{ENV_LABEL}]</b>{group_label} {safe_message}\n🕐 {now}",
             parse_mode="HTML",
         )
     except Exception:
