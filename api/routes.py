@@ -7,7 +7,6 @@ import asyncio
 import logging
 from datetime import datetime
 
-import aiosqlite
 from config import DB_PATH
 from db import (
     all_bols_accepted,
@@ -247,20 +246,24 @@ async def get_driver_by_group(group_id: str):
 async def create_permissions(data: PermissionsRequest):
     """Create company permissions row."""
     now = datetime.now().isoformat()
-    try:
-        async with db_connect(DB_PATH) as db:
-            await db.execute(
-                """INSERT INTO company_permissions
-                   (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time,
-                    photo_pdf, paperwork_driver_group, paperwork_internal_team, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (str(data.companyId), int(data.ticketCreate), int(data.taskParaphrase),
-                 int(data.bolPodPaperworkAnalysis), int(data.checkInCheckOut), int(data.sleepTime),
-                 int(data.photoPdf), int(data.paperworkDriverGroup), int(data.paperworkInternalTeam),
-                 now, now),
-            )
-            await db.commit()
-    except aiosqlite.IntegrityError:
+    # created_at/updated_at SQL-ichida datetime('now') (Postgres tarjimon → now();
+    # Python-string param TIMESTAMPTZ'ga bog'lansa asyncpg DataError berardi). Dublikat
+    # 409'ni backend-agnostik aniqlaymiz: ON CONFLICT DO NOTHING + rowcount==0
+    # (aiosqlite.IntegrityError vs asyncpg.UniqueViolationError farqiga bog'lanmaymiz).
+    async with db_connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO company_permissions
+               (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time,
+                photo_pdf, paperwork_driver_group, paperwork_internal_team, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+               ON CONFLICT(company_id) DO NOTHING""",
+            (str(data.companyId), int(data.ticketCreate), int(data.taskParaphrase),
+             int(data.bolPodPaperworkAnalysis), int(data.checkInCheckOut), int(data.sleepTime),
+             int(data.photoPdf), int(data.paperworkDriverGroup), int(data.paperworkInternalTeam)),
+        )
+        await db.commit()
+        inserted = cur.rowcount
+    if inserted == 0:
         raise HTTPException(status_code=409, detail=f"Permissions already exist for company {data.companyId}")
     logger.info("✅ Permissions created for company %s", data.companyId)
     return PermissionsResponse(
@@ -281,13 +284,14 @@ async def create_permissions(data: PermissionsRequest):
 @router.put("/permissions/{company_id}", response_model=PermissionsResponse)
 async def update_permissions(company_id: int, data: PermissionsUpdateRequest):
     """Upsert company permissions."""
-    now = datetime.now().isoformat()
     async with db_connect(DB_PATH) as db:
+        # created_at/updated_at SQL-ichida datetime('now') (Postgres → now()); Python-string
+        # param TIMESTAMPTZ'ga bog'lansa asyncpg DataError berardi.
         await db.execute(
             """INSERT INTO company_permissions
                (company_id, ticket_create, task_paraphrase, bol_pod_paperwork, check_in_check_out, sleep_time,
                 photo_pdf, paperwork_driver_group, paperwork_internal_team, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(company_id) DO UPDATE SET
                  ticket_create=excluded.ticket_create,
                  task_paraphrase=excluded.task_paraphrase,
@@ -300,8 +304,7 @@ async def update_permissions(company_id: int, data: PermissionsUpdateRequest):
                  updated_at=excluded.updated_at""",
             (str(company_id), int(data.ticketCreate), int(data.taskParaphrase),
              int(data.bolPodPaperworkAnalysis), int(data.checkInCheckOut), int(data.sleepTime),
-             int(data.photoPdf), int(data.paperworkDriverGroup), int(data.paperworkInternalTeam),
-             now, now),
+             int(data.photoPdf), int(data.paperworkDriverGroup), int(data.paperworkInternalTeam)),
         )
         await db.commit()
     logger.info("✅ Permissions updated for company %s", company_id)

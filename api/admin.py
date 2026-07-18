@@ -295,10 +295,18 @@ async def admin_checkin_recent(request: Request, limit: int = 50):
 _DBS = {"main": DB_PATH, "stats": STATS_DB_PATH}
 
 
-async def _table_names(db) -> list[str]:
-    async with db.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    ) as cur:
+def _is_pg_main(path) -> bool:
+    """Bu path Postgres-backend'dagi asosiy DB'mi (stats HAR DOIM SQLite)."""
+    import config
+    return config.DB_BACKEND == "postgres" and str(path) == str(config.DB_PATH)
+
+
+async def _table_names(db, path) -> list[str]:
+    if _is_pg_main(path):
+        q = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public'"
+    else:
+        q = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    async with db.execute(q) as cur:
         return [r[0] for r in await cur.fetchall()]
 
 
@@ -309,7 +317,7 @@ async def admin_db_tables(request: Request):
     for db_key, path in _DBS.items():
         try:
             async with db_connect(path) as db:
-                for tbl in await _table_names(db):
+                for tbl in await _table_names(db, path):
                     out.append({
                         "db": db_key, "table": tbl,
                         "rows": await _count(db, f'SELECT COUNT(*) FROM "{tbl}"'),
@@ -329,32 +337,42 @@ async def admin_db_rows(request: Request, db: str = "main", table: str = "",
     limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
 
+    is_pg = _is_pg_main(path)
+    blob_type = "BYTEA" if is_pg else "BLOB"   # Postgres bytea / SQLite BLOB
+    order_col = "ctid" if is_pg else "rowid"   # ikkalasi ham "eng yangi" fizik tartib
+
     async with db_connect(path) as conn:
-        tables = await _table_names(conn)
+        tables = await _table_names(conn, path)
         if table not in tables:
             raise HTTPException(status_code=404, detail=f"Jadval topilmadi: {table!r}")
 
-        async with conn.execute(f'PRAGMA table_info("{table}")') as cur:
-            cols = [(r[1], (r[2] or "").upper()) for r in await cur.fetchall()]
+        if is_pg:
+            async with conn.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name=? ORDER BY ordinal_position", (table,)) as cur:
+                cols = [(r[0], (r[1] or "").upper()) for r in await cur.fetchall()]
+        else:
+            async with conn.execute(f'PRAGMA table_info("{table}")') as cur:
+                cols = [(r[1], (r[2] or "").upper()) for r in await cur.fetchall()]
         col_names = [c[0] for c in cols]
 
-        # BLOB ustunlarini SELECT'da o'lchamga almashtiramiz — MB'lab fayl bytes
-        # JSON'ga oqib ketmasin.
+        # BLOB/BYTEA ustunlarini SELECT'da o'lchamga almashtiramiz — MB'lab fayl bytes
+        # JSON'ga oqib ketmasin. length() ikkala backend'da ham bayt-sonini beradi.
         select_parts = [
-            f'length("{name}") || \' B blob\' AS "{name}"' if "BLOB" in ctype else f'"{name}"'
+            f'length("{name}") || \' B blob\' AS "{name}"' if blob_type in ctype else f'"{name}"'
             for name, ctype in cols
         ]
 
         where, params = "", []
         if search.strip():
             like = f"%{search.strip()}%"
-            where = " WHERE " + " OR ".join(f'CAST("{c}" AS TEXT) LIKE ?' for c, t in cols if "BLOB" not in t)
-            params = [like] * sum(1 for _, t in cols if "BLOB" not in t)
+            where = " WHERE " + " OR ".join(f'CAST("{c}" AS TEXT) LIKE ?' for c, t in cols if blob_type not in t)
+            params = [like] * sum(1 for _, t in cols if blob_type not in t)
 
         total = await _count(conn, f'SELECT COUNT(*) FROM "{table}"{where}', tuple(params))
         async with conn.execute(
             f'SELECT {", ".join(select_parts)} FROM "{table}"{where} '
-            f'ORDER BY rowid DESC LIMIT ? OFFSET ?',
+            f'ORDER BY {order_col} DESC LIMIT ? OFFSET ?',
             (*params, limit, offset),
         ) as cur:
             rows = await cur.fetchall()

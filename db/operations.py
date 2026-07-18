@@ -318,6 +318,8 @@ async def get_company_permissions(company_id: str) -> dict | None:
                 "photoPdf": bool(row[5]),
                 "paperworkDriverGroup": bool(row[6]),
                 "paperworkInternalTeam": bool(row[7]),
-                "createdAt": row[8],
-                "updatedAt": row[9],
+                # Postgres TIMESTAMPTZ datetime-obyekt qaytaradi; PermissionsResponse
+                # maydoni `str` — str()'ga o'giramiz (SQLite'da allaqachon matn edi).
+                "createdAt": str(row[8]) if row[8] is not None else None,
+                "updatedAt": str(row[9]) if row[9] is not None else None,
             }

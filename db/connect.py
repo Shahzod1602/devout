@@ -24,9 +24,13 @@ async def db_connect(db_path: "Path | str") -> AsyncIterator[aiosqlite.Connectio
         from db.pg import _PgConn, get_pg_pool  # lazy — faqat postgres backend'da
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            # _PgConn aiosqlite.Connection interfeysini duck-type qiladi (execute/
-            # commit/rollback + cursor) — statik tip mos emas, lekin runtime mos.
-            yield _PgConn(conn)  # type: ignore[misc]
+            # Butun kontekstni BITTA tranzaksiyaga o'raymiz — SQLite'ning connection-per-op
+            # + commit semantikasiga mos: ko'p-statement funksiyalar (clear_load 3 DELETE,
+            # group-wipe 4 DELETE, leave-group cleanup) ATOMIK bo'ladi; xato bo'lsa hammasi
+            # rollback. db.commit() no-op — tranzaksiya kontekst tugaganda commit qiladi.
+            # _PgConn aiosqlite.Connection'ni duck-type qiladi (statik tip mos emas, runtime mos).
+            async with conn.transaction():
+                yield _PgConn(conn)  # type: ignore[misc]
         return
 
     db = await aiosqlite.connect(db_path)
