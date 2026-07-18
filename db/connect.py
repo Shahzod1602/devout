@@ -24,7 +24,9 @@ async def db_connect(db_path: "Path | str") -> AsyncIterator[aiosqlite.Connectio
         from db.pg import _PgConn, get_pg_pool  # lazy — faqat postgres backend'da
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            yield _PgConn(conn)
+            # _PgConn aiosqlite.Connection interfeysini duck-type qiladi (execute/
+            # commit/rollback + cursor) — statik tip mos emas, lekin runtime mos.
+            yield _PgConn(conn)  # type: ignore[misc]
         return
 
     db = await aiosqlite.connect(db_path)
