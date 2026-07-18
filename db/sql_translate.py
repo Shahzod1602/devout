@@ -46,9 +46,11 @@ def to_postgres(sql: str) -> tuple[str, bool]:
         return "", True
 
     s = sql
-    # datetime('now', ?)  →  (now() + (?)::interval)   — `?` saqlanadi, keyin raqamlanadi.
-    #   Param SQLite'da '-60 days' keladi; Postgres interval '-60 days' = now()-60d. Mos.
-    s = _DATETIME_INTERVAL.sub("(now() + (?)::interval)", s)
+    # datetime('now', ?)  →  (now() + (?)::text::interval)   — `?` saqlanadi, keyin raqamlanadi.
+    #   Param SQLite'da '-60 days' (STRING) keladi. ::text bo'lmasa asyncpg $N'ni interval
+    #   deb biladi va Python timedelta kutadi → DataError. ::text bilan string yuboriladi,
+    #   PG o'zi interval'ga aylantiradi. Postgres interval '-60 days' = now()-60d. Mos.
+    s = _DATETIME_INTERVAL.sub("(now() + (?)::text::interval)", s)
     # datetime('now')  →  now()
     s = _DATETIME_NOW.sub("now()", s)
     # INSERT OR IGNORE INTO ...  →  INSERT INTO ... ON CONFLICT DO NOTHING
