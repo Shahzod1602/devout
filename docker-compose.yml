@@ -1,4 +1,22 @@
 services:
+  # PostgreSQL (dev) — Postgres migratsiya sinovi (docs/POSTGRES_MIGRATION_PLAN.md).
+  # Dev ma'lumot kichik → named volume (root disk). Test/prod uchun +10GB volume ishlatiladi.
+  postgres:
+    image: postgres:16-alpine
+    container_name: devout-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: devbot
+      POSTGRES_PASSWORD: devbotpass
+      POSTGRES_DB: devbot
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devbot -d devbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   devout-bot:
     build:
       context: .
@@ -14,6 +32,14 @@ services:
     environment:
       # Vertex AI (Gemini paperwork) — API key emas, service account orqali.
       - GOOGLE_APPLICATION_CREDENTIALS=/app/vertex-server-key.json
+      # Postgres migratsiya (dev sinovi). DATABASE_URL migratsiya skripti + backend uchun.
+      - DATABASE_URL=postgresql://devbot:devbotpass@postgres:5432/devbot
+      # ⚠️ Migratsiyadan KEYIN 'postgres'ga o'zgartiriladi (hozircha sqlite — bot SQLite'da,
+      # Postgres bo'sh ko'tariladi; migrate_to_pg.py ma'lumotni ko'chiradi, keyin flip).
+      - DB_BACKEND=sqlite
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - bot_data:/app/data
       # Vertex service account key (deploy paytida /root/devout ga tayyorlanadi,
@@ -22,3 +48,4 @@ services:
 
 volumes:
   bot_data:
+  pg_data:
