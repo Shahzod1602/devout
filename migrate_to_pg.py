@@ -30,6 +30,10 @@ log = logging.getLogger("migrate")
 # $N::text — asyncpg param'ni MATN sifatida yuborsin (SQLite UTC-matn), keyin PG
 # o'zi timestamp'ga aylantiradi. Aks holda asyncpg $N::timestamp ni ko'rib datetime
 # kutadi va matn'ga DataError beradi.
+# Batch — prod'da ~1800 blob (~2GB) hammasini birdan xotiraga yuklamaslik uchun.
+# 100 blob × ~1.7MB ≈ 170MB peak (konteyner RAM'iga sig'adi).
+_BATCH = 100
+
 _TS = "::text::timestamp AT TIME ZONE 'UTC'"
 TABLES = [
     ("loads", ["group_id", "load_id", "pickup_count", "delivery_count", "created_at"], {"created_at": _TS}),
@@ -68,20 +72,28 @@ async def migrate():
     src.row_factory = None
     try:
         for table, cols, casts in TABLES:
+            insert = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({_placeholders(cols, casts)})"
+            select = f"SELECT {', '.join(cols)} FROM {table}"
             # Manbada jadval bor-yo'qligini tekshirish (schema_migrations har doim bor)
             try:
-                async with src.execute(f"SELECT {', '.join(cols)} FROM {table}") as cur:
-                    rows = list(await cur.fetchall())
+                async with src.execute(f"SELECT 1 FROM {table} LIMIT 1"):
+                    pass
             except sqlite3.OperationalError as e:
                 log.warning("  %s: manba jadval yo'q (%s) — o'tkazildi", table, e)
                 continue
 
             await pg.execute(f"TRUNCATE {table} RESTART IDENTITY CASCADE")
-            if rows:
-                insert = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({_placeholders(cols, casts)})"
-                # bytes bloblari aiosqlite'da bytes bo'lib keladi → asyncpg BYTEA. Batch.
-                await pg.executemany(insert, [tuple(r) for r in rows])
-            log.info("  %s: %d qator ko'chirildi", table, len(rows))
+            # BATCH: bloblarni (prod ~2GB) hammasini xotiraga yuklamaymiz — _BATCH'lab
+            # oqim. bytes bloblari aiosqlite'da bytes → asyncpg BYTEA.
+            total = 0
+            async with src.execute(select) as cur:
+                while True:
+                    batch = list(await cur.fetchmany(_BATCH))
+                    if not batch:
+                        break
+                    await pg.executemany(insert, [tuple(r) for r in batch])
+                    total += len(batch)
+            log.info("  %s: %d qator ko'chirildi", table, total)
 
         await _verify(src, pg)
     finally:
