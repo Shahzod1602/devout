@@ -40,6 +40,7 @@ COPY --chown=bot:bot stats/ ./stats/
 COPY --chown=bot:bot external/ ./external/
 COPY --chown=bot:bot paperwork/ ./paperwork/
 COPY --chown=bot:bot db/ ./db/
+COPY --chown=bot:bot storage/ ./storage/
 COPY --chown=bot:bot api/ ./api/
 COPY --chown=bot:bot telegram/ ./telegram/
 COPY --chown=bot:bot static/ ./static/

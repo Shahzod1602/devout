@@ -165,6 +165,23 @@ ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
 CONTROL_PLANE_API_KEY = os.environ.get("CONTROL_PLANE_API_KEY", "").strip()
 CONTROL_PLANE_AUTH_ENFORCE = os.environ.get("CONTROL_PLANE_AUTH_ENFORCE", "0").strip() == "1"
 
+# === Storage / DB backend (docs/POSTGRES_MIGRATION_PLAN.md) ===
+# Phase 0: flaglar qo'shildi, DEFAULT = HOZIRGI xulq (hech narsa o'zgarmaydi).
+# BLOB_STORAGE_BACKEND: 'db' (inline file_blob — hozirgi) | 's3' (object storage — Phase 1).
+# 's3' yoqilганда S3-mos (Cloudflare R2 / Hetzner / MinIO) config'i kerak.
+BLOB_STORAGE_BACKEND = os.environ.get("BLOB_STORAGE_BACKEND", "db").strip().lower()
+BLOB_S3_ENDPOINT = os.environ.get("BLOB_S3_ENDPOINT", "").strip()
+BLOB_S3_BUCKET = os.environ.get("BLOB_S3_BUCKET", "").strip()
+BLOB_S3_ACCESS_KEY = os.environ.get("BLOB_S3_ACCESS_KEY", "").strip()
+BLOB_S3_SECRET_KEY = os.environ.get("BLOB_S3_SECRET_KEY", "").strip()
+BLOB_S3_REGION = os.environ.get("BLOB_S3_REGION", "auto").strip()
+# Prefiks — muhitlar (bot/botprod/devbot) bitta bucket'da ajralsin.
+BLOB_S3_PREFIX = os.environ.get("BLOB_S3_PREFIX", ENV_LABEL).strip()
+
+# DB_BACKEND: 'sqlite' (hozirgi) | 'postgres' (Phase 2). DATABASE_URL faqat 'postgres'da.
+DB_BACKEND = os.environ.get("DB_BACKEND", "sqlite").strip().lower()
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
 # === API login credentials ===
 LOGIN_CREDENTIALS = {
     "email": _require_env("LOGIN_EMAIL"),
