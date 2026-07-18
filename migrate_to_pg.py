@@ -27,7 +27,10 @@ log = logging.getLogger("migrate")
 
 # (jadval, ustunlar, identity_bormi) — identity jadvallarga id KO'CHIRILMAYDI (PG o'zi beradi;
 # id-tartibda insert → yangi ketma-ket id'lar o'sha tartibni saqlaydi, ORDER BY id DESC ishlaydi).
-_TS = "::timestamp AT TIME ZONE 'UTC'"
+# $N::text — asyncpg param'ni MATN sifatida yuborsin (SQLite UTC-matn), keyin PG
+# o'zi timestamp'ga aylantiradi. Aks holda asyncpg $N::timestamp ni ko'rib datetime
+# kutadi va matn'ga DataError beradi.
+_TS = "::text::timestamp AT TIME ZONE 'UTC'"
 TABLES = [
     ("loads", ["group_id", "load_id", "pickup_count", "delivery_count", "created_at"], {"created_at": _TS}),
     ("groups", ["group_id", "driver_id", "driver_name", "team_driver_id", "team_driver_name", "updated_at"], {"updated_at": _TS}),
