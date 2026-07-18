@@ -34,9 +34,9 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/vertex-server-key.json
       # Postgres migratsiya (dev sinovi). DATABASE_URL migratsiya skripti + backend uchun.
       - DATABASE_URL=postgresql://devbot:devbotpass@postgres:5432/devbot
-      # ⚠️ Migratsiyadan KEYIN 'postgres'ga o'zgartiriladi (hozircha sqlite — bot SQLite'da,
-      # Postgres bo'sh ko'tariladi; migrate_to_pg.py ma'lumotni ko'chiradi, keyin flip).
-      - DB_BACKEND=sqlite
+      # Migratsiya + VERIFY o'tdi (2026-07-18) → dev endi Postgres'da.
+      # Orqaga qaytish: sqlite (SQLite fayl data volume'da manba sifatida saqlanadi).
+      - DB_BACKEND=postgres
     depends_on:
       postgres:
         condition: service_healthy
