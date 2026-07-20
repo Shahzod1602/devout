@@ -140,6 +140,12 @@ PO_MATCH_ENFORCE = os.environ.get("PO_MATCH_ENFORCE", "1").strip() == "1"
 # ko'rsatiladi, qabul eski tartibda davom etadi (kill-switch).
 PAGE_COUNT_ENFORCE = os.environ.get("PAGE_COUNT_ENFORCE", "1").strip() == "1"
 
+# CLA-887: BOL yuklamasida load-securement (yuk trailerда mahkamlangan) fotosi bo'lmasa
+# driver'ga "Load securement pictures were not sent" warning. BloklaMAYDI (page-count kabi
+# emas) — faqat ogohlantirish + kartada ❌. 0 — warning o'chadi, kriteriya baribir kartaga
+# boradi (backend field qo'shsa) (kill-switch).
+LOAD_SECUREMENT_ENFORCE = os.environ.get("LOAD_SECUREMENT_ENFORCE", "1").strip() == "1"
+
 # BOL/POD PDF blob'lari (bols/pods.file_blob) load tugagach clear_load_from_cache
 # bilan o'chadi, lekin tugamagan/osilib qolgan loadlarniki cheksiz o'sib DB'ni
 # shishiradi (audit v3 #19; prod'da 2.7GB kuzatildi). Startup'da saved_at bo'yicha

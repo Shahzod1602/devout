@@ -28,6 +28,18 @@ def _health_field(v):
     return v if isinstance(v, dict) else {"isHealthy": False, "summary": "Not checked"}
 
 
+def _health_field_ok(v):
+    """`_health_field`ning DEFAULT-SOG'LOM ukasi (palletCount / loadSecurement uchun).
+
+    Bu kriteriyalar RC'da/yuklamada ma'lumot bo'lmagan LEGACY holatda qizil bo'lmasligi
+    kerak — shuning uchun model dict bermasa yoki `isHealthy` bool bo'lmasa (present-but-null),
+    konservativ `{isHealthy: True, "N/A"}` qaytaramiz. isHealthy HAR DOIM bool bo'ladi —
+    aks holda client.py payload'ga "none" tushib backend POST'ni 400 qilishi mumkin edi."""
+    if isinstance(v, dict) and isinstance(v.get("isHealthy"), bool):
+        return v
+    return {"isHealthy": True, "summary": "N/A"}
+
+
 # Bosilgan sahifa-ko'rsatkichi: FAQAT "page/pg/sheet" prefiksli variantlar ("PAGE: 1 Of 3",
 # "Page 1/4", "Sheet 2 of 3"). Prefiksisiz "1 of 3" ATAYIN qamrab olinmagan — hujjat matnida
 # "1 of 3 pallets" kabi soxta trigger bo'lardi; ularni model o'qiydi.
@@ -247,12 +259,12 @@ async def check_bol_endpoint(
         # pallet ma'lumoti bo'lmagan (legacy) loadlar qizil bo'lib ketmasin.
         # isHealthy bool bo'lishi ham shart: present-but-null holatda "none" stringi
         # backend DTO'siga tushib butun POST'ni 400 qilib yuborishi mumkin edi.
-        _pallet = result.get("palletCount")
-        paperwork_data["palletCount"] = (
-            _pallet
-            if isinstance(_pallet, dict) and isinstance(_pallet.get("isHealthy"), bool)
-            else {"isHealthy": True, "summary": "N/A"}
-        )
+        paperwork_data["palletCount"] = _health_field_ok(result.get("palletCount"))
+
+        # CLA-887: BOL yuklamasida load-securement (yuk trailerда mahkamlangan) fotosi
+        # borligini tekshiradi. palletCount kabi default SOG'LOM (N/A) — model bermasa yoki
+        # legacy holatda qizil bo'lmasin (guard: _health_field_ok).
+        paperwork_data["loadSecurement"] = _health_field_ok(result.get("loadSecurement"))
 
         # Page count kriteriyasi — hujjatdagi bosilgan "X of Y" bilan haqiqiy sahifa
         # sonini solishtiradi. Keraksiz (truck/trailer/bo'sh) rasmlar realPages'ga

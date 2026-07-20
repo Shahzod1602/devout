@@ -237,6 +237,18 @@ def get_pdf_page_count(file_bytes: bytes, file_name: str) -> int:
         return 1
 
 
+def _health_payload(prefix: str, value) -> dict:
+    """Default-SOG'LOM kriteriya (palletCount / loadSecurement) uchun backend payload
+    juftligini quradi: `{f"{prefix}.IsHealthy": "true"/"false", f"{prefix}.Summary": ...}`.
+    value dict bo'lmasa yoki maydonlar yo'q bo'lsa isHealthy=true / summary="N/A" (legacy
+    loadlar qizil bo'lmasin). str(...).lower() — bool "none" backend'ni 400 qilmasin."""
+    v = value or {}
+    return {
+        f"{prefix}.IsHealthy": str(v.get("isHealthy", True)).lower(),
+        f"{prefix}.Summary": v.get("summary") or "N/A",
+    }
+
+
 async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_name: str,
                                file_type: int = 1, group_id: int | None = None,
                                message_id: int | None = None) -> dict:
@@ -282,8 +294,10 @@ async def post_paperwork_issue(result_data: dict, bol_file_bytes: bytes, file_na
             # BOL pallet/piece soni vs RC (broker short-load claim'idan himoya). Default
             # sog'lom "N/A" — RC'da pallet yo'q loadlar (legacy) qizil bo'lmasin. Backend
             # DTO'da PalletCount property paydo bo'lguncha bu field jimgina tushiriladi.
-            "PalletCount.IsHealthy": str((result_data.get("palletCount") or {}).get("isHealthy", True)).lower(),
-            "PalletCount.Summary": (result_data.get("palletCount") or {}).get("summary") or "N/A",
+            **_health_payload("PalletCount", result_data.get("palletCount")),
+            # CLA-887 load securement — default sog'lom "N/A" (pallet naqshi). Backend
+            # DTO'da LoadSecurement property paydo bo'lguncha bu field jimgina tushiriladi.
+            **_health_payload("LoadSecurement", result_data.get("loadSecurement")),
             "PageCount.IsHealthy": str(result_data.get("pageCount", {}).get("isHealthy", True)).lower(),
             "PageCount.Summary": result_data.get("pageCount", {}).get("summary") or str(page_count),
             "RouteNumber.IsHealthy": str(result_data.get("routeNumber", {}).get("isHealthy", True)).lower(),

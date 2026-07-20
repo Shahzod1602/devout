@@ -271,6 +271,19 @@ STEP 4 — Page count & relevance (the upload may contain several images):
   - "irrelevantPages": how many provided images are NOT part of the document
     (truck/trailer photos, blank pages, unrelated snapshots).
 
+STEP 5 — Load securement photo (proof the cargo was loaded & secured at pickup):
+  - A LOAD SECUREMENT photo is a picture of the ACTUAL LOADED CARGO inside/on the trailer —
+    pallets, boxes, or freight loaded in the trailer, typically held by straps, load bars,
+    e-track, blocking/bracing, or a trailer visibly packed with cargo. Drivers send it so a
+    later transit-damage claim points to whoever loaded the trailer, not the driver.
+  - The following are NOT load securement photos: an EMPTY trailer interior, the truck
+    exterior or cab, a license plate, an odometer, a random snapshot, or any document page.
+  - "loadSecurement.isHealthy" = true if AT LEAST ONE provided image is a load securement
+    photo (loaded cargo visible in the trailer).
+  - "loadSecurement.isHealthy" = false ONLY when the upload has BOL document page(s) but
+    contains NO load securement photo at all. Put a short note in "summary"
+    (e.g. "Load secured photo present" or "No load securement photo in upload").
+
 Return ONLY valid JSON — no markdown, no code fences, no extra text:
 {{
     "isBOL": true or false,
@@ -283,6 +296,7 @@ Return ONLY valid JSON — no markdown, no code fences, no extra text:
     "pickUpAddress": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "deliveryAddressAddress": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "palletCount": {{"isHealthy": true or false, "summary": "brief explanation"}},
+    "loadSecurement": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "pageCount": {{"printedTotal": null, "realPages": 1, "irrelevantPages": 0}}
 }}"""
 
