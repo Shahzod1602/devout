@@ -146,6 +146,20 @@ PAGE_COUNT_ENFORCE = os.environ.get("PAGE_COUNT_ENFORCE", "1").strip() == "1"
 # boradi (backend field qo'shsa) (kill-switch).
 LOAD_SECUREMENT_ENFORCE = os.environ.get("LOAD_SECUREMENT_ENFORCE", "1").strip() == "1"
 
+# Trailer drop/pickup hisoboti ("trl # VT700653 / Picked up by: <ISM> / Location / Date /
+# Conditon") check-in EMAS: "picked up" CHECKIN_CHECKOUT_KEYWORDS'ga tushib LLM yo'lagiga
+# borardi, LLM esa TRAILER raqamini load_id deb qaytarardi (unda 3+ raqam bor —
+# is_valid_load_id o'tkazib yuboradi) -> driver'ga soxta "check-in/check-out vaqtlarini
+# kiriting" javobi + missing_time statistikasi. 1 (default): matnda LOAD RAQAMI UMUMAN
+# yo'q bo'lsa (har bir raqam trailer/seal/truck markeriga yoki sanaga bog'langan —
+# checkin.is_trailer_only_reference) xabar check-in oqimidan butunlay chetlab o'tadi
+# (javob yo'q, backend yo'q, statistika yo'q). Faqat SHU bitta, strukturaviy mezon:
+# shablon-taxminga asoslangan "shape" va LLM'dan keyingi backstop ataylab olib tashlandi
+# (haqiqiy check-in'larni jimgina yo'qotardi).
+# 0 — eski xulq qaytadi. Kill-switch SHART: over-filtering SOKIN buziladi (driver javob
+# olmaydi, /admin'da hech narsa ko'rinmaydi), shuning uchun deploy'siz rollback kerak.
+TRAILER_REPORT_SKIP = os.environ.get("TRAILER_REPORT_SKIP", "1").strip() == "1"
+
 # BOL/POD PDF blob'lari (bols/pods.file_blob) load tugagach clear_load_from_cache
 # bilan o'chadi, lekin tugamagan/osilib qolgan loadlarniki cheksiz o'sib DB'ni
 # shishiradi (audit v3 #19; prod'da 2.7GB kuzatildi). Startup'da saved_at bo'yicha

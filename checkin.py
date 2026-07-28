@@ -9,7 +9,7 @@ Public funksiyalar:
 - parse_checkin_checkout, parse_checkin_checkout_llm
 - send_checkin_checkout
 - process_checkin_checkout_text (yuqori darajadagi orchestrator)
-- is_advisory_text, is_strong_dispatch (filters)
+- is_advisory_text, is_strong_dispatch, is_trailer_only_reference (filters)
 - parse_time_to_iso, extract_timezone, extract_tz_token, is_valid_load_id (utilities)
 - resolve_shared_region, build_time_fields (TZ birlashtirish + payload vaqtlari)
 - extract_doc_numbers_from_text, build_checkin_checkout_text (reply enrichment)
@@ -29,6 +29,7 @@ import aiohttp
 from aiogram import types
 from config import (
     CHECKIN_CHECKOUT_URL,
+    TRAILER_REPORT_SKIP,
     ssl_context,
 )
 from db import get_company_permissions, get_load_from_cache
@@ -136,6 +137,154 @@ ADVISORY_CHECKIN_PATTERN = re.compile(
     r'|\bif\s+not[\s\-]*\$?\s*\d+\s*(?:charge|\$)'
     r'|\bmust\s+(?:have|be|provide)',
     re.IGNORECASE,
+)
+
+# ====== Trailer report (drop/hook) filter ======
+#
+# Driver trailerni tashlab ketgani/olganini hisobot qilib yozadi. Bu LOAD check-in emas,
+# lekin "picked up" kalit so'zi orqali LLM yo'lagiga tushib, LLM trailer raqamini load_id
+# deb qaytarardi -> soxta "vaqtlarni kiriting" javobi + buzuq missing_time statistikasi.
+#
+# BITTA mexanizm — PROVENANCE: matndagi HAR BIR raqam trailer/seal/truck kabi non-load
+# markerga (yoki sanaga) bog'langan, ya'ni matnda load raqami UMUMAN yo'q. Bu yagona
+# yo'lning xavfsizlik dalili STRUKTURAVIY ("bu matnda load raqami yo'q"), shablon-taxmin
+# emas. Satr-shakliga BOG'LIQ EMAS, shuning uchun ovozli transkript / bir-qatorli /
+# tinish belgisiz variantlarda ham ishlaydi (voice handler ham shu funksiyaga keladi —
+# handlers.py:1182).
+#
+# ATAYLAB YO'Q (v2 soddalashtirish): "shape" yo'li (trailer sarlavhasi + 2+ forma maydoni)
+# va LLM'dan KEYINGI backstop. Ikkalasi ham shablon-taxmin edi va HAQIQIY check-in'larni
+# JIMGINA yo'qotardi (javob yo'q, backend yo'q, statistika yo'q) — bu o'zi tuzatgan
+# ko'rinadigan "nag"dan qat'iy yomonroq. ZARAR ASIMMETRIYASI qoidasi: shubhali holatda
+# SKIP QILMAYMIZ.
+#
+# Filtr "check in/check out" yoki soat ko'rsatilgan matnni HECH QACHON ushlamaydi —
+# haqiqiy check-in doim vaqt bilan keladi (hard constraint).
+
+# Gorizontal bo'shliq: NBSP (\xa0, iOS klaviaturasi) ham kirsin — [ \t] uni o'tkazmaydi.
+_H = r'[^\S\n]'
+
+# Trailer sarlavhasi so'zlari (kiril variantlari ham — haydovchilar aralash yozadi).
+_TRAILER_MARKER_WORDS = r'trl|trlr|trailer|trailor|unit|прицеп|трейлер'
+# Load BO'LMAGAN, lekin trailer hisobotida uchraydigan raqam egalari.
+_NON_LOAD_MARKER_WORDS = (
+    _TRAILER_MARKER_WORDS
+    + r'|seal|plomba|пломба|truck|tractor|chassis|container'
+    + r'|vin|plate|tag|mileage|odometer|door|dock|bay|gate'
+)
+# Load raqami markerlari (reply-enrichment ham aynan shu shaklda qo'shadi).
+_LOAD_MARKER_WORDS = r'bol|pod|load|order|trip|shipment|manifest|ref|reference'
+
+
+def _bound_id_pattern(markers: str) -> re.Pattern:
+    """`<marker> [no|#|:] <id>` — marker bilan BOG'LANGAN raqamni topadi (id = group 1).
+
+    Id marker'dan keyin BEVOSITA turishi shart. Avvalgi ixtiyoriy `[A-Za-z]{1,4}\\s+`
+    prefiksi oradagi ISTALGAN qisqa so'zni yutar edi ("unit ok 448812" -> haqiqiy load
+    raqami "trailer'niki" deb belgilanardi), ya'ni load raqamini "xavfsiz" deb yuvardi.
+    Endi faqat id'ning o'ziga yopishgan harflar ("VT700653") qabul qilinadi: "trl VT 700653"
+    kabi bo'shliqli variant bog'lanmaydi -> raqam manbasi noma'lum -> SKIP QILINMAYDI
+    (zarar asimmetriyasi bo'yicha xavfsiz tomon).
+    """
+    return re.compile(
+        r'\b(?:' + markers + r')s?\b'
+        r'(?:' + _H + r'*(?:number|num|no|nomer|id)\b\.?)?'
+        + _H + r'*[:#.\-–—/]{0,2}' + _H + r'*'
+        r'(' + _LOAD_ID + r')\b',
+        re.IGNORECASE,
+    )
+
+
+TRAILER_BOUND_ID_PATTERN = _bound_id_pattern(_TRAILER_MARKER_WORDS)
+NON_LOAD_BOUND_ID_PATTERN = _bound_id_pattern(_NON_LOAD_MARKER_WORDS)
+LOAD_BOUND_ID_PATTERN = _bound_id_pattern(_LOAD_MARKER_WORDS)
+
+# Matndagi HAR QANDAY load-id nomzodi (LLM ham aynan shu shakldagi tokenni tanlaydi).
+# `_LOAD_ID` naqshini BUTUN matn bo'ylab finditer qilish KVADRATIK edi: `[A-Za-z0-9\-]*`
+# uzun harf-oqimida ("xxxx...") har bir boshlanish nuqtasidan oqimni to'liq yutib, keyin
+# orqaga qaytardi — 4 KB xabar 80 ms, 16 KB esa 1.3 s (bu funksiya HAR BIR xabarda ishlaydi).
+# Endi avval `\d{3,}` o'zagi topiladi, so'ng chetlarga chiziqli kengaytiriladi: natija
+# AYNAN o'sha maksimal span'lar, murakkablik O(n).
+_ID_DIGIT_CORE_PATTERN = re.compile(r'\d{3,}')
+_ID_BODY_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+
+
+def _id_candidate_spans(text: str) -> list[tuple[int, int]]:
+    """Har bir "3+ raqamli" identifikatorning maksimal span'i (finditer(_LOAD_ID) ekvivalenti)."""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    for m in _ID_DIGIT_CORE_PATTERN.finditer(text):
+        if m.start() < pos:
+            continue  # oldingi span bu o'zakni allaqachon yutgan (finditer kabi kesishmaydi)
+        start, end = m.start(), m.end()
+        while start > 0 and text[start - 1] in _ID_BODY_CHARS:
+            start -= 1
+        while end < len(text) and text[end] in _ID_BODY_CHARS:
+            end += 1
+        spans.append((start, end))
+        pos = end
+    return spans
+
+# Sana bo'lagi — "Date: 07/25/2026" ichidagi "2026" ni "noma'lum raqam" deb sanamaslik uchun.
+# Siqiq 8-raqamli variant (YYYYMMDD) oy/kun oralig'i bilan TEKSHIRILADI: avvalgi
+# `(?:19|20)\d{6}` haqiqiy 8-xonali load raqamini ("20123456" -> oy 34) "sana" deb
+# yuvib yuborardi va check-in jimgina yo'qolardi.
+_DATE_SPAN_PATTERN = re.compile(
+    r'\b\d{1,4}[/.\-]\d{1,2}(?:[/.\-]\d{2,4})?\b'
+    r'|\b(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\b',
+)
+
+# Vaqt YORLIG'I: "in/out/at/arrived/departed/time...". "Date"/"Sana" ATAYLAB yo'q — aynan
+# yorliq sana bilan soatni ajratadigan yagona ishonchli signal ("Date: 7.25" = sana,
+# "out 15.45" = soat).
+_TIME_LABEL = (
+    r'in|out|at|time|arrive[ds]?|arriving|arrival|depart(?:ed|s|ure)?|left|'
+    r'start(?:ed)?|finish(?:ed)?|eta|etd'
+)
+# Yorliqdan keyingi "yalang'och" soat: military (0900/1700, 0000-2359 oralig'ida) yoki
+# nuqta/tire/vergul/"h" bilan yozilgani (15.45, 8.30, 8h30, 15,45). Yorliqsiz "7.25" —
+# sana bo'lib qolaveradi (aynan yorliq ikkisini ajratadi).
+_LABELLED_TIME = (
+    r'\b(?:' + _TIME_LABEL + r')\b' + _H + r'*[:=\-–—]?' + _H + r'*'
+    r'(?:(?:[01]?\d|2[0-3])[0-5]\d|\d{1,2}[.,h\-][0-5]\d)\b'
+)
+
+# VAQT SIGNALI — haqiqiy check-in'da DOIM bor (soat, AM/PM, military+TZ/hrs, yorliqli
+# yalang'och soat yoki "check in/out" so'zi). Sof sana ("Date: 7/25", "7.25") vaqt
+# hisoblanmaydi: yorliqsiz nuqtali ajratgich ataylab chiqarib tashlangan, aks holda
+# trailer hisobotining sanasi filtrni qurolsizlantirardi.
+CHECKIN_TIME_SIGNAL_PATTERN = re.compile(
+    r'check(?:ed|ing)?[\s\-_]*(?:in|out)\b'
+    r'|\b\d{1,2}:\d{2}\b'
+    r'|\b\d{1,2}' + _H + r'*[AaPp]\.?' + _H + r'*[Mm]\b'
+    r'|\b\d{3,4}' + _H + r'*(?:hrs?\b|hours\b|o\'?clock\b|(?:' + _TZ_TOKEN_PATTERN + r')\b)'
+    r'|' + _LABELLED_TIME
+    + r'|\bnoon\b|\bmidnight\b',
+    re.IGNORECASE,
+)
+
+# --- KORROBORATSIYA (AND-shart) ---
+# Yalang'och "<marker> <raqam> <fe'l>" ("Unit 448812 delivered", "Trl 448812 delivered")
+# hisobot EMAS: u haqiqiy LOAD raqami bo'lishi mumkin va uni jimgina yo'qotib bo'lmaydi
+# (o'lchandi: fix'gacha bunday xabar javob olardi, provenance esa uni sokin yutardi).
+# Shuning uchun skip uchun trailer hisobotining kamida BITTA qo'shimcha belgisi talab
+# qilinadi: "<fe'l> ... by <ISM>" / "Driver: <ISM>" aktori yoki forma maydoni yorlig'i.
+# DIQQAT: bu shart faqat SKIP'ni KAMAYTIRADI — yangi "sokin yo'qotish" yo'lini ocholmaydi.
+# Yalang'och "driver"/"by" IKKI NUQTA talab qiladi, aks holda oddiy nasr ("By the time I
+# got to the dock they were closed") aktor deb hisoblanardi.
+_TRAILER_ACTOR_PATTERN = re.compile(
+    r'(?:picked|pick|dropped|drop|hooked|hook|swapped|swap|left|took|taken|returned|'
+    r'delivered|empty|loaded|unloaded|bobtail)[^\n:]{0,24}?\bby\b'
+    + _H + r'*:?' + _H + r'*[^\W\d_]'
+    r'|\b(?:driver|by)\b' + _H + r'*:' + _H + r'*[^\W\d_]',
+    re.IGNORECASE,
+)
+_TRAILER_FIELD_PATTERN = re.compile(
+    r'(?:^|[|;•·/,])' + _H + r'*[>*\-–—#)\].]*' + _H + r'*'
+    r'(?:location|loc|city|yard|place|address|addr|manzil|joy|адрес|место'
+    r'|date|sana|дата|condi?ti?on|condtion|cond|holat(?:i)?|состояние'
+    r'|seal|plomba|пломба|notes?|comments?|izoh|примечание)\b',
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # load_id da bo'lishi mumkin bo'lmagan "noise" tokenlar
@@ -495,6 +644,62 @@ def is_strong_dispatch(text: str) -> bool:
     return signals >= 2
 
 
+def _norm_id(value) -> str:
+    """Identifikatorni solishtirish uchun normallashtirish ("VT-700 653" -> "vt700653")."""
+    return re.sub(r'[^a-z0-9]', '', str(value or "").lower())
+
+
+def _trailer_bound_ids(text: str) -> set[str]:
+    """Trailer/seal/truck kabi NON-LOAD markerga bog'langan raqamlar (normallashgan)."""
+    return {_norm_id(m.group(1)) for m in NON_LOAD_BOUND_ID_PATTERN.finditer(text)}
+
+
+def _has_foreign_load_ref(text: str) -> bool:
+    """Trailer raqamidan BOSHQA, BOL/POD/Load markeriga bog'langan haqiqiy raqam bormi.
+
+    Bo'lsa — matnda load raqami BOR, ya'ni provenance dalili yiqiladi va filtr tegmaydi.
+    """
+    trailer_ids = _trailer_bound_ids(text)
+    for m in LOAD_BOUND_ID_PATTERN.finditer(text):
+        ref = m.group(1)
+        if is_valid_load_id(ref) and _norm_id(ref) not in trailer_ids:
+            return True
+    return False
+
+
+def is_trailer_only_reference(text: str) -> bool:
+    """Trailer hisobotimi: matndagi HAR BIR raqam trailer/seal/truck markeriga (yoki sanaga) bog'langan.
+
+    Ya'ni matnda load raqami umuman yo'q — LLM baribir bittasini "topib" beradi.
+    Satr shakliga bog'liq emas: ovozli transkript ("trailer 700653 picked up by doniyor")
+    ham ushlanadi. Noma'lum manbali raqam (bare military time "0900", zip, telefon)
+    uchrasa — filtr tegmaydi (konservativ).
+
+    Bu — YAGONA skip mexanizmi. Uning dalili strukturaviy: load raqami yo'q ekan,
+    check-in ham yo'q. Shubhali holatda False (skip qilmaymiz) tomonga og'adi.
+
+    Provenance'ning O'ZI yetarli emas: "Unit 448812 delivered" da ham hamma raqam
+    markerga bog'langan, lekin 448812 haqiqiy load raqami bo'lishi mumkin. Shuning uchun
+    korroboratsiya (aktor yoki forma maydoni) MAJBURIY — pastdagi AND-shart.
+    """
+    if not text:
+        return False
+    if not TRAILER_BOUND_ID_PATTERN.search(text):
+        return False
+    if CHECKIN_TIME_SIGNAL_PATTERN.search(text):
+        return False
+    if _has_foreign_load_ref(text):
+        return False
+    if not (_TRAILER_ACTOR_PATTERN.search(text) or _TRAILER_FIELD_PATTERN.search(text)):
+        return False
+    safe_spans = [m.span(1) for m in NON_LOAD_BOUND_ID_PATTERN.finditer(text)]
+    safe_spans += [m.span() for m in _DATE_SPAN_PATTERN.finditer(text)]
+    for start, end in _id_candidate_spans(text):
+        if not any(s <= start and end <= e for s, e in safe_spans):
+            return False
+    return True
+
+
 # ====== Backend communication ======
 
 async def resolve_load_id(group_id, load_number):
@@ -626,6 +831,11 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
     if is_strong_dispatch(text):
         logger.debug("🔍 Strong dispatch signals detected, skipping checkin/checkout")
         return False
+    if TRAILER_REPORT_SKIP and is_trailer_only_reference(text):
+        # Trailer almashinuvi hisoboti — javob ham, backend ham, statistika ham yo'q.
+        # YAGONA skip nuqtasi: LLM'dan keyin boshqa "backstop" YO'Q (pastga qarang).
+        logger.debug("🔍 Trailer report detected, skipping checkin/checkout")
+        return False
     if DISPATCH_MESSAGE_PATTERN.search(text) and not CHECKIN_CHECKOUT_KEYWORDS.search(text):
         logger.debug("🔍 Dispatch message detected, skipping checkin/checkout")
         return False
@@ -648,6 +858,13 @@ async def process_checkin_checkout_text(text: str, chat_id: int, msg) -> bool:
     if not parsed:
         logger.debug("🔍 No checkin/checkout found in text")
         return False
+
+    # LLM'dan KEYINGI backstop ATAYLAB YO'Q. Avvalgi varianti LLM qaytargan load_id'ni
+    # "trailer raqami" deb hisoblab xabarni jimgina yo'qotardi — va "<fe'l> ... by <ISM>"
+    # yoki "Driver:" satri bo'lgan HAR QANDAY xabarda (matnda trailer so'zi umuman
+    # bo'lmasa ham) ishlab ketardi: "Delivered 129201881, signed by John Smith" jimgina
+    # yo'qolardi. Bu yerda skip qilmaslikning narxi — ko'rinadigan "vaqtlarni kiriting"
+    # javobi; skip qilishning narxi — yo'qolgan check-in. Ikkinchisi qimmatroq.
 
     company_id = await get_or_fetch_company_id(chat_id)
     if company_id:
