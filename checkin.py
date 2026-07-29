@@ -165,7 +165,11 @@ ADVISORY_CHECKIN_PATTERN = re.compile(
 _H = r'[^\S\n]'
 
 # Trailer sarlavhasi so'zlari (kiril variantlari ham — haydovchilar aralash yozadi).
-_TRAILER_MARKER_WORDS = r'trl|trlr|trailer|trailor|unit|прицеп|трейлер'
+# "tri" — haqiqiy prod xatosi ("trl" da l -> i, klaviaturada yonma-yon va ko'rinishi bir xil).
+# "trail(er|or|r)?" — bitta o'zak butun oilani qamrab oladi: trail/trailr/trailer/trailor.
+# ATAYLAB YO'Q: "tr" va "trk" — juda qisqa/noaniq, ular load raqamini "trailerniki" deb
+# yuvib, haqiqiy check-in'ni sokin yo'qotishi mumkin (zarar asimmetriyasi).
+_TRAILER_MARKER_WORDS = r'trl|trlr|tri|trail(?:er|or|r)?|unit|прицеп|трейлер'
 # Load BO'LMAGAN, lekin trailer hisobotida uchraydigan raqam egalari.
 _NON_LOAD_MARKER_WORDS = (
     _TRAILER_MARKER_WORDS
