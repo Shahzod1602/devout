@@ -81,6 +81,11 @@ _TIME_CAPTURE = r'(?:\d{1,2}[:.\-]\d{2}|\d{4})(?:\s*[AaPp]\.?\s*[Mm]\.?)?(?:\s+[
 # Load ID — kamida 3 ta raqam bo'lishi shart (alfanumerik prefiks/suffiks ruxsat: "L260504-01027")
 _LOAD_ID = r'[A-Za-z0-9\-]*\d{3,}[A-Za-z0-9\-]*'
 
+# Arzon qo'riqchi: ikkala og'ir naqsh ham bu so'zlarni TALAB qiladi (pastdagi
+# parse_checkin_checkout docstring'iga qarang — prod avariyasi sababi).
+_CHECKIN_WORD_RE = re.compile(r'check(?:ed|ing)?\s*[\-_]?\s*in\b', re.IGNORECASE)
+_CHECKOUT_WORD_RE = re.compile(r'check(?:ed|ing)?\s*[\-_]?\s*out\b', re.IGNORECASE)
+
 # Forward: BOL/POD #12345 ... check in ... check out
 CHECKIN_CHECKOUT_PATTERN = re.compile(
     r'(BOL|POD)\b[^\n]{0,60}?\b(' + _LOAD_ID + r')\b'
@@ -439,7 +444,19 @@ def is_valid_load_id(s) -> bool:
 # ====== Parsers ======
 
 def parse_checkin_checkout(text: str) -> dict | None:
-    """BOL/POD raqami, checkin va checkout vaqtlarini regex orqali parse qiladi."""
+    """BOL/POD raqami, checkin va checkout vaqtlarini regex orqali parse qiladi.
+
+    TEZ QO'RIQCHI (2026-07-29 PROD AVARIYASI): quyidagi ikkala naqsh ham matnda HAM
+    "check in", HAM "check out" bo'lishini TALAB qiladi. Ular bo'lmasa naqsh baribir
+    mos kelmaydi — lekin mos kelmaslikni ISBOTLASH juda qimmat: DOTALL + ikkita `.*?`
+    + `_LOAD_ID` ning ichma-ich kvantorlari ([A-Za-z0-9\\-]*\\d{3,}[A-Za-z0-9\\-]*)
+    uzun matnda katastrofik backtracking beradi. Prod'da bitta xabar butun botni
+    100% CPU'da 35 daqiqa muzlatib qo'ydi (py-spy: parse_checkin_checkout -> REV.search),
+    va Telegram xabarni qayta yuborgani uchun restart ham yordam bermadi.
+    Bu qo'riqchi XULQNI O'ZGARTIRMAYDI — faqat aniq muvaffaqiyatsiz ishni qilmaydi.
+    """
+    if not (_CHECKIN_WORD_RE.search(text) and _CHECKOUT_WORD_RE.search(text)):
+        return None
     match = CHECKIN_CHECKOUT_PATTERN.search(text)
     if match:
         load_id = match.group(2)
