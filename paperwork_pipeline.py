@@ -77,9 +77,10 @@ async def summarize_text(text: str):
         return text
 
 
-# Quick tugmalar (config.DEFAULT_QUICK_BUTTONS bilan sinxron) — ataylab bosilgan
-# eskalatsiya; LLM'siz deterministik department. Model adashib "chat" desa ticket
-# jimgina yo'qolib qolmasligi uchun.
+# Quick tugmalar (endigilarda default fallback ko'rsatilmaydi, lekin backend
+# shu matnlarni yuborishi mumkin) — ataylab bosilgan eskalatsiya; LLM'siz
+# deterministik department. Model adashib "chat" desa ticket jimgina
+# yo'qolib qolmasligi uchun.
 _QUICK_BUTTON_DEPS = {
     "🚛 vehicle issue": "fleet",
     "📦 delivery problem": "dispatcher",

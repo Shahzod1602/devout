@@ -208,16 +208,6 @@ LOGIN_CREDENTIALS = {
     "password": _require_env("LOGIN_PASSWORD"),
 }
 
-# === Default quick buttons (Telegram UI) ===
-DEFAULT_QUICK_BUTTONS = [
-    "🚛 Vehicle Issue",
-    "📦 Delivery Problem",
-    "🔄 System Issue",
-    "⚠️ Safety Concern",
-    "💰 Payment Issue",
-    "📋 HR Question",
-]
-
 # === Domain mappings ===
 # Backend Department enum bilan sinxron (updater-agent Department.cs): ELD = 7 (2026-07-10 qo'shilgan).
 DEPARTMENT_MAP = {"fleet": 0, "updater": 1, "dispatcher": 2, "insurance": 3, "safety": 4, "hr": 5, "accounting": 6, "eld": 7}
