@@ -71,7 +71,7 @@ from tickets import (
     send_message_to_history_api,
     send_to_swagger,
 )
-from ui import build_quickbuttons_keyboard, get_quickbuttons
+from ui import send_quickbuttons
 from weather import get_weather_reply
 
 logger = logging.getLogger(__name__)
@@ -150,10 +150,7 @@ async def start_cmd(msg: types.Message):
             return
 
         if is_any_driver(chat_id, msg.from_user.id):
-            buttons = await get_quickbuttons(chat_id)
-            keyboard = build_quickbuttons_keyboard(buttons)
-            if keyboard:
-                await msg.answer("Quick buttons loaded:", reply_markup=keyboard)
+            await send_quickbuttons(msg, chat_id)
         else:
             kb = InlineKeyboardBuilder()
             kb.button(text="👤 I am a driver", callback_data="set_driver")
@@ -202,10 +199,7 @@ async def set_driver_callback(callback: types.CallbackQuery):
         await callback.answer("❌ This group already has 2 drivers. Use /teamdriver to replace.", show_alert=True)
         return
 
-    buttons = await get_quickbuttons(chat_id)
-    keyboard = build_quickbuttons_keyboard(buttons)
-    if keyboard:
-        await callback.message.answer("Quick buttons loaded:", reply_markup=keyboard)
+    await send_quickbuttons(callback.message, chat_id)
 
 
 # ====== /internal_team — Internal team group registration ======
@@ -639,12 +633,9 @@ async def generic_text_handler(msg: types.Message):
             await msg.answer("❌ Group is not registered. Please use /start to re-register.")
             return
 
-        buttons = await get_quickbuttons(chat_id)
-        keyboard = build_quickbuttons_keyboard(buttons)
-        if keyboard:
-            await msg.answer("🔄 Buttons refreshed!", reply_markup=keyboard)
-        else:
-            await msg.answer("ℹ️ No quick buttons configured for this group.")
+        ok = await send_quickbuttons(msg, chat_id, loaded_text="🔄 Buttons refreshed!")
+        if not ok:
+            await msg.answer("⚠️ Couldn't load quick buttons (server issue). Please try again.")
         return
 
     if AWAITING_TOKEN.get(chat_id) and AWAITING_TOKEN[chat_id] == user_id:
@@ -676,10 +667,7 @@ async def generic_text_handler(msg: types.Message):
             await send_action_log(chat_id, f"Group registration successful: {chat_name}")
 
             if is_any_driver(chat_id, user_id):
-                buttons = await get_quickbuttons(chat_id)
-                keyboard = build_quickbuttons_keyboard(buttons)
-                if keyboard:
-                    await msg.answer("Quick buttons loaded:", reply_markup=keyboard)
+                await send_quickbuttons(msg, chat_id)
             else:
                 kb = InlineKeyboardBuilder()
                 kb.button(text="👤 I am a driver", callback_data="set_driver")
