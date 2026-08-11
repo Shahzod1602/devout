@@ -16,7 +16,7 @@ from io import BytesIO
 
 import httpx
 from aiogram import types
-from config import BOT_PORT, LOAD_SECUREMENT_ENFORCE, PAGE_COUNT_ENFORCE
+from config import BOT_PORT, PAGE_COUNT_ENFORCE
 from db import (
     add_bol_to_cache,
     add_pod_to_cache,
@@ -383,19 +383,16 @@ async def _run_bol_check_impl(chat_id: int, file_bytes_value: bytes, file_name: 
                     except Exception:
                         logger.debug("pallet mismatch ogohlantirishi yuborilmadi", exc_info=True)
 
-                # CLA-887: load securement fotosi yo'q bo'lsa haydovchiga darhol aytamiz —
-                # u hali pickup'da, yukni trailerда suratga olib yuborishi mumkin (yo'lda
-                # damage bo'lsa aybni yuklovchiga qoldirish uchun). Faqat warning — BOL
-                # qabuli bloklanmaydi. LOAD_SECUREMENT_ENFORCE=0 bilan o'chiriladi.
+                # CLA-887: load securement fotosi yo'q bo'lsa driver'ga ALOHIDA xabar
+                # YUBORILMAYDI (2026-08-11, user qarori) — BOL tahlil kartasida
+                # loadSecurement ❌/✅ baribir ko'rinadi, qo'shimcha ⚠️ guruhda ortiqcha
+                # shovqin edi. Signal faqat logda qoladi.
                 _secure_check = paperwork.get("loadSecurement") or {}
-                if LOAD_SECUREMENT_ENFORCE and _secure_check.get("isHealthy") is False:
-                    try:
-                        await msg.answer(
-                            "⚠️ Load securement pictures were not sent — please also send a photo "
-                            "of the loaded cargo secured in the trailer."
-                        )
-                    except Exception:
-                        logger.debug("load securement ogohlantirishi yuborilmadi", exc_info=True)
+                if _secure_check.get("isHealthy") is False:
+                    logger.warning(
+                        "load securement fotosi yo'q (load=%s) — driver'ga xabar yuborilmadi",
+                        paperwork.get("loadId"),
+                    )
 
                 logger.debug("📋 paperwork loadId=%s, calling post_paperwork_issue...", paperwork.get('loadId'))
                 bol_post_result = await post_paperwork_issue(

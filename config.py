@@ -140,12 +140,6 @@ PO_MATCH_ENFORCE = os.environ.get("PO_MATCH_ENFORCE", "1").strip() == "1"
 # ko'rsatiladi, qabul eski tartibda davom etadi (kill-switch).
 PAGE_COUNT_ENFORCE = os.environ.get("PAGE_COUNT_ENFORCE", "1").strip() == "1"
 
-# CLA-887: BOL yuklamasida load-securement (yuk trailerда mahkamlangan) fotosi bo'lmasa
-# driver'ga "Load securement pictures were not sent" warning. BloklaMAYDI (page-count kabi
-# emas) — faqat ogohlantirish + kartada ❌. 0 — warning o'chadi, kriteriya baribir kartaga
-# boradi (backend field qo'shsa) (kill-switch).
-LOAD_SECUREMENT_ENFORCE = os.environ.get("LOAD_SECUREMENT_ENFORCE", "1").strip() == "1"
-
 # Trailer drop/pickup hisoboti ("trl # VT700653 / Picked up by: <ISM> / Location / Date /
 # Conditon") check-in EMAS: "picked up" CHECKIN_CHECKOUT_KEYWORDS'ga tushib LLM yo'lagiga
 # borardi, LLM esa TRAILER raqamini load_id deb qaytarardi (unda 3+ raqam bor —
