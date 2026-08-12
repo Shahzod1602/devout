@@ -552,6 +552,11 @@ def build_checkin_checkout_text(msg: types.Message, primary_text: str) -> str:
 async def parse_checkin_checkout_llm(text: str) -> dict | None:
     """Regex topalmasa Groq LLM orqali checkin/checkout parse qiladi."""
     try:
+        # CHK-4: integratsiya-bot (masalan @ALGOservice_B) load-kartasiga reply qilib
+        # "Has been picked up" deb booking/dispatch tasdig'i yozganda LLM buni check-in
+        # deb hisoblab "vaqtlarni kiriting" deb driver'ga/guruhga nag qilardi — driver hech
+        # qanday check-in yozmagan bo'lsa ham. Quyidagi ikki qoida shu holatni null'ga
+        # yo'naltiradi, haqiqiy (birinchi shaxs, joyni tasvirlaydigan) check-in'larga tegmaydi.
         prompt = f"""Extract check-in/check-out info from this message. Return ONLY valid JSON, nothing else.
 
 Message: "{text}"
@@ -565,6 +570,14 @@ Rules:
   * POD = delivery stop (e.g. "delivered", "delivery completed", "successfully delivered", "unloaded", "dropped off", "load finished", "the load finished", "load is finished")
   * If the message explicitly says BOL or POD, use that directly
   * If neither keyword, infer from context: pickup-related = BOL, delivery-related = POD
+- A message is a check-in/check-out report ONLY if it describes the driver's own physical
+  activity at a specific stop (arriving, waiting, loading/unloading freight, leaving). It must
+  sound like a first-person field report from the truck.
+- If the message is a short third-person status blurb (e.g. "Load has been picked up", "Load has
+  been covered", "Load has been booked/assigned") that tags/mentions a company, service, or broker
+  account (like "@SomeCompany_B") and does NOT describe the driver being at a location, doing
+  anything, or any time-of-day — this is a DISPATCH/BOOKING NOTICE, not a check-in. Return null
+  for these, even if a load number is present.
 - load_id is the load/BOL/POD/reference number
 - checkin and checkout must include time and timezone if present (e.g. "10:00 AM PST")
 - If timezone is missing, keep time as-is
