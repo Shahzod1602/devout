@@ -38,6 +38,8 @@ async def run_bot():
     """Aiogram dispatcher'ni start qiladi."""
     # Late import — telegram/handlers.py state/groups'dan import qiladi (loop bo'lmasin)
     from telegram import telegram_router
+    from telegram.chat_logger import ChatLogMiddleware
+    dp.message.outer_middleware(ChatLogMiddleware())
     dp.include_router(telegram_router)
     logger.info("🤖 Telegram bot is starting...")
     await get_api_token()

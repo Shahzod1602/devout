@@ -21,6 +21,21 @@ GEMINI_PRICING_PER_1M = [
     ("gemini-2.5-pro",   1.25, 10.00),
     ("gemini-2.5-flash", 0.30, 2.50),
     ("gemini-2.0-flash", 0.10, 0.40),
+    # GLM (Z.ai) — LLM_ENDPOINT z.ai'ga qaratilgan holat (llm_gateway.py). Narxlar docs.z.ai/guides/overview/pricing
+    # (2026-08-11 tekshirilgan). Substring-tartib: "glm-5" qisqasi 5.2/5.1/5-turbo'dan KEYIN.
+    ("glm-5-turbo",   1.20, 4.00),
+    ("glm-5.2",       1.40, 4.40),
+    ("glm-5.1",       1.40, 4.40),
+    ("glm-5",         1.00, 3.20),
+    ("glm-4.7",       0.60, 2.20),
+    ("glm-4.6",       0.60, 2.20),
+    ("glm-4.5-flash", 0.0, 0.0),   # tekin tier
+    ("glm-4.5-air",   0.20, 1.10),
+    ("glm-4.5v",      0.60, 1.80),
+    ("glm-4.5",       0.60, 2.20),
+    # opencode.ai/zen bepul tier ("...-free" bilan tugaydi) — ENG OXIRIDA tursin,
+    # aks holda kelajakdagi aniqroq nomlarni yutib yuboradi.
+    ("-free",         0.0, 0.0),
 ]
 
 # Joriy chaqiruv kontekstidagi endpoint nomini ushlash uchun (validate-bol, us-mail-analyze, ...).

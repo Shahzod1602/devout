@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from api import api_router
 from api.admin import router as admin_router
+from api.ai_chat import router as ai_chat_router
 from db import init_db
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -62,6 +63,7 @@ app.include_router(gemini_router)            # /stats/gemini/*
 app.include_router(paperwork_api_router)     # /check-bol
 app.include_router(api_router)               # /send-message, /permissions/*, /accepted, ...
 app.include_router(admin_router)             # /admin — token-auth kuzatuv paneli
+app.include_router(ai_chat_router)           # /api/ai/chat — chat-log + guruh tahlili (AI_API_TOKEN)
 
 
 @app.get("/health", include_in_schema=False)

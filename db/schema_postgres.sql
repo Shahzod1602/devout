@@ -69,3 +69,38 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     version    TEXT PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Chat log — group chat orqali o'tgan HAR BIR xabarni yozadi (chat_logger.py
+-- outer middleware), STARTED_GROUPS gate'idan mustaqil. /admin/chat UI'si shu
+-- ustidan o'qiydi (real-time-messages/history).
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id                   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    group_id             TEXT NOT NULL,
+    message_id           BIGINT NOT NULL,
+    user_id              BIGINT,
+    user_name            TEXT,
+    msg_type             TEXT NOT NULL DEFAULT 'text',
+    text                 TEXT,
+    reply_to_message_id  BIGINT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_group ON chat_messages(group_id, id);
+-- Reply preview — Telegram javob berilganda asl xabarni to'liq beradi (msg.reply_to_message),
+-- shuning uchun JOIN kerak emas: denormalized saqlaymiz (eski/hali loglanmagan xabarga
+-- javob bo'lsa ham ishlaydi). Allaqachon deploy qilingan jadvalga ustun qo'shish — ADD
+-- COLUMN IF NOT EXISTS idempotent, har startup'da xavfsiz qayta ishlaydi.
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_user_name TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_text TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS reply_msg_type TEXT;
+-- Media fayllar (rasm/fayl/ovoz/video) — Telegram file_id'ni saqlaymiz, real vaqtda
+-- /admin/chat/api/file/{id} orqali bot tokeni bilan Telegram'dan proksi qilib olib
+-- beriladi (bloblarni bazaga yozib yubormaymiz — faqat file_id, arzon).
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS file_id TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS file_name TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS file_size BIGINT;
+
+CREATE TABLE IF NOT EXISTS chat_groups (
+    group_id   TEXT PRIMARY KEY,
+    title      TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

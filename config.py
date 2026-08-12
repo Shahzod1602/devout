@@ -165,6 +165,37 @@ PAPERWORK_BLOB_TTL_DAYS = int(os.environ.get("PAPERWORK_BLOB_TTL_DAYS", "60"))
 # BUTUNLAY O'CHIQ (503) — audit H1 (authsiz control-plane) takrorlanmasin.
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "").strip()
 
+# Chat log — group orqali o'tgan HAR BIR xabarni chat_messages'ga yozish +
+# /admin/chat real-time UI (chat_logger.py outer middleware). 0 — middleware
+# hech narsa yozmaydi/push qilmaydi (kill-switch).
+CHAT_LOG_ENABLE = os.environ.get("CHAT_LOG_ENABLE", "1").strip() == "1"
+
+# AI_API_TOKEN — tashqi AI agentlar uchun /api/ai/chat/* (faqat o'qish, xabar tarixi +
+# media) kirish kaliti. ADMIN_TOKEN'dan MUSTAQIL — agent admin panelga (DB brauzer,
+# log'lar) kira olmasin. O'rnatilmagan bo'lsa endpoint butunlay o'chiq (503).
+AI_API_TOKEN = os.environ.get("AI_API_TOKEN", "").strip()
+
+# === LLM gateway — guruh chat tahlili (POST /api/ai/chat/analyze) ===
+# Ataylab Gemini EMAS: tahlil uzun transkript + burst bo'lishi mumkin, Gemini esa
+# paperwork bilan bir xil Vertex kvotasini bo'lishadi (2026-07-10 429 darsi).
+# Kalit yo'q → endpoint 503 (butunlay o'chiq), boshqa hech narsaga ta'sir qilmaydi.
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
+# DEFAULT: opencode.ai/zen gateway (OpenAI-mos) + bepul model.
+# 2026-08-11 o'lchov (6.6k belgi dispatch transkripti, 3 ta "yashirin" muammo):
+#   deepseek-v4-flash-free 17.6s 3/3 ✅ | mimo-v2.5-free 20.6s 3/3 | longcat-2.0-free 31.5s 3/3
+#   nemotron-3-ultra-free 76.9s (sekin) | ling-3.0-flash-free bo'sh content ❌
+#   nemotron-3.5-lightning-free fikrlash zanjirini javobga chiqardi ❌
+# 60k belgi (~17k token) transkript ~11s da ishlandi.
+LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "https://opencode.ai/zen/v1/chat/completions")
+LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash-free")
+# Z.ai-ga xos maydon; BO'SH bo'lsa umuman yuborilmaydi (opencode uni kutmaydi).
+LLM_THINKING = os.environ.get("LLM_THINKING", "").strip().lower()
+LLM_TIMEOUT_S = int(os.environ.get("LLM_TIMEOUT_S", "90"))
+LLM_MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "4"))
+# Transkript hajmi — modelga yuborilishidan oldin ENG ESKI xabarlardan kesiladi.
+GROUP_ANALYZE_MAX_CHARS = int(os.environ.get("GROUP_ANALYZE_MAX_CHARS", "60000"))
+GROUP_ANALYZE_MAX_MESSAGES = int(os.environ.get("GROUP_ANALYZE_MAX_MESSAGES", "3000"))
+
 # === Control-plane auth (audit v3 H2) ===
 # Backend webhook endpointlari (api/routes.py: /send-message, /accepted,
 # /permissions, /group-deleted, ...) autentifikatsiyasiz edi — tarmoq ichidagi
