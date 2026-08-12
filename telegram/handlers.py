@@ -11,10 +11,10 @@ import re
 import aiohttp
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from checkin import build_checkin_checkout_text, process_checkin_checkout_text
-from config import DB_PATH
+from config import CEO_BIND_ENABLE, DB_PATH
 from cooldown import (
     check_driver_cooldown,
     clear_driver_cooldown,
@@ -24,6 +24,7 @@ from db import get_company_permissions
 from db.connect import db_connect
 from external import get_api_token, get_eta_message_for_load, get_loads_from_api
 from groups import (
+    bind_ceo_recipient,
     check_group_registered_force,
     get_group_driver,
     get_or_fetch_company_id,
@@ -119,6 +120,53 @@ async def on_my_chat_member(event: types.ChatMemberUpdated):
         await db.commit()
 
     logger.info("✅ Cleanup done for group %s", group_id)
+
+
+# ====== /start ceo_<token> — CEO personal-chat bind ======
+# Registered BEFORE `start_cmd` (below): aiogram Router matches handlers in
+# registration/file order, first-match wins. Bare `/start` (no args, or args not
+# starting with "ceo_") fails this filter safely (magic_filter returns None on
+# `command.args is None`, not an exception) and falls through to `start_cmd`.
+
+@router.message(CommandStart(deep_link=True, magic=F.args.startswith("ceo_")))
+async def ceo_bind_cmd(msg: types.Message, command: CommandObject):
+    """/start ceo_<token> — CEO'ning shaxsiy DM'ini kunlik hisobot uchun bog'laydi.
+
+    Guruh-registratsiya oqimidan (`AWAITING_TOKEN`) butunlay mustaqil — bu CHATga
+    tegishli, guruhga emas. Har holatda shu yerda `return` bilan tugaydi, generic
+    `/start` (guruh) yo'lagiga HECH QACHON tushmaydi (docs/CEO_DAILY_REPORT_PLAN.md §7.2.6).
+
+    `chatId` kontraktda CEO'ning SHAXSIY chat id'si — magic filter chat turini
+    ko'rmaydi (faqat `command.args`), shuning uchun tekshiruv shu yerda: guruhda
+    kimdir link matnini joylab qo'ysa (masalan xato paste), o'sha GURUH CEO
+    recipient sifatida bog'lanib qolmasin. Driver-guruh nudge'lari bilan bir xil
+    sabab bo'yicha JIMcha o'tkazib yuboriladi — spam yo'q (memory: 1712ce8).
+    """
+    if msg.chat.type != "private":
+        return
+
+    if not CEO_BIND_ENABLE:
+        await msg.answer("⚠️ This feature is currently unavailable. Please try again later.")
+        return
+
+    chat_id = msg.chat.id
+    token = (command.args or "").strip()
+    name = msg.from_user.full_name if msg.from_user else None
+
+    await msg.answer("🔐 Connecting your account...")
+    access_token = await get_api_token()
+    if not access_token:
+        await msg.answer("⚠️ Temporary connection issue, please try again.")
+        return
+
+    result = await bind_ceo_recipient(access_token, token, chat_id, name)
+    if result.get("success"):
+        await msg.answer("✅ Connected. Your daily report will arrive in this chat.")
+        await send_action_log(chat_id, f"CEO recipient bound: {name or chat_id}")
+    elif result.get("status") in (400, 404):
+        await msg.answer("❌ This link is invalid or expired. Ask your admin for a new one.")
+    else:
+        await msg.answer("⚠️ Temporary connection issue, please try again.")
 
 
 # ====== /start + driver setup ======

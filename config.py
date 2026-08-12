@@ -112,6 +112,7 @@ LOGIN_URL = f"{BASE_URL}/auth/login"
 SWAGGER_URL = f"{BASE_URL}/tickets"
 VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token"
 INTERNAL_VALIDATE_TOKEN_URL = f"{BASE_URL}/general-settings/validate-bot-token/internal"
+CEO_RECIPIENTS_BIND_URL = f"{BASE_URL}/ceo-recipients/bind"
 ACTION_LOGS_URL = f"{BASE_URL}/action-logs"
 CHECKIN_CHECKOUT_URL = f"{BASE_URL}/stops/checkin-checkout"
 PAPERWORK_ISSUES_URL = f"{BASE_URL}/paperwork-issues"
@@ -159,6 +160,12 @@ TRAILER_REPORT_SKIP = os.environ.get("TRAILER_REPORT_SKIP", "1").strip() == "1"
 # shishiradi (audit v3 #19; prod'da 2.7GB kuzatildi). Startup'da saved_at bo'yicha
 # shu kundan eski blob'lar tozalanadi (stats-retention naqshi). 0 → TTL o'chiq.
 PAPERWORK_BLOB_TTL_DAYS = int(os.environ.get("PAPERWORK_BLOB_TTL_DAYS", "60"))
+
+# CEO shaxsiy chat bind — `/start ceo_<token>` deep-link orqali (docs/CEO_DAILY_REPORT_PLAN.md
+# §7). Backend `POST /ceo-recipients/bind` ga {token, chatId, name} yuboradi. 0 bo'lsa
+# handler "vaqtincha ishlamayapti" deb javob berib to'xtaydi (bind so'rovi yuborilmaydi) —
+# CLA-1659 backend tomoni hali On Hold bo'lgani uchun deploy'siz o'chirish imkoni kerak.
+CEO_BIND_ENABLE = os.environ.get("CEO_BIND_ENABLE", "1").strip() == "1"
 
 # === Admin panel ===
 # ADMIN_TOKEN — /admin panelining kirish kaliti. O'rnatilmagan bo'lsa panel

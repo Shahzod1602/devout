@@ -19,6 +19,7 @@ from datetime import datetime
 import aiohttp
 from config import (
     BASE_URL,
+    CEO_RECIPIENTS_BIND_URL,
     DB_PATH,
     INTERNAL_VALIDATE_TOKEN_URL,
     STARTED_GROUPS_FILE,
@@ -457,3 +458,51 @@ async def validate_bot_token_internal(access_token, user_token, group_id, group_
     return await _post_validate_token(
         INTERNAL_VALIDATE_TOKEN_URL, "internal", access_token, user_token, group_id, group_name
     )
+
+
+async def bind_ceo_recipient(access_token, deep_link_token, chat_id, name=None):
+    """CEO shaxsiy chatini kunlik hisobot uchun backend'ga bog'lash.
+
+    POST /ceo-recipients/bind — `deep_link_token` `/start ceo_...` payload'idan
+    O'ZGARTIRMASDAN uzatiladi (o'zi bir martalik/muddatli backend tomonida tekshiriladi,
+    bot uni tahlil qilmaydi). `chat_id` CEO'ning shaxsiy (DM) chat id'si, string sifatida.
+    `name` ixtiyoriy — backend settings ro'yxatida ko'rsatish uchun.
+
+    NOTE: token xavfsizlik uchun HECH QAYERDA log'ga yozilmaydi (faqat chat_id + status).
+    """
+    payload = {"token": deep_link_token, "chatId": str(chat_id)}
+    if name:
+        payload["name"] = name
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            logger.info("🔐 Binding CEO recipient for chat %s...", chat_id)
+            async with session.post(
+                CEO_RECIPIENTS_BIND_URL, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                response_text = await resp.text()
+                logger.info("📨 CEO bind response status: %s", resp.status)
+                try:
+                    data = json.loads(response_text) if response_text else None
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    data = None
+                if isinstance(data, dict):
+                    return {
+                        "success": resp.status == 200,
+                        "status": resp.status,
+                        "data": data,
+                        "message": data.get("message", "Bind completed"),
+                    }
+                return {
+                    "success": resp.status == 200,
+                    "status": resp.status,
+                    "data": None,
+                    "message": response_text,
+                }
+    except Exception as e:
+        logger.exception("❌ CEO bind error")
+        return {"success": False, "error": str(e), "message": f"Bind error: {str(e)}"}
