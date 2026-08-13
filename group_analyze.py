@@ -116,24 +116,17 @@ async def analyze_companies(
     prompt: str,
     *,
     hours: int | None = None,
-    since: str | None = None,
-    until: str | None = None,
-    max_messages: int | None = None,
-    model: str | None = None,
 ) -> dict:
     """Bir yoki bir nechta kompaniyaning BARCHA guruhlarini bitta umumiy javobga tahlil qiladi.
 
     Guruh yoki xabar topilmasa `answer=None` + `messages=0` qaytaradi (model
     chaqirilmaydi). Model xatosi `llm_gateway.LlmError` bo'lib yuqoriga chiqadi
-    (endpoint 502 ga o'giradi). `max_messages` — GURUH BOSHIGA limit (umumiy emas);
-    yakuniy transkript baribir `build_transcript`ning umumiy belgi byudjetiga
-    (eng eski xabarlardan kesib) sig'diriladi.
+    (endpoint 502 ga o'giradi). `hours` bermasangiz — butun tarix (guruh boshiga
+    `GROUP_ANALYZE_MAX_MESSAGES` limitigacha); yakuniy transkript baribir
+    `build_transcript`ning umumiy belgi byudjetiga (eng eski xabarlardan kesib)
+    sig'diriladi.
     """
-    now = datetime.now(UTC)
-    since_dt = chat_data.as_dt(since)
-    until_dt = chat_data.as_dt(until)
-    if hours and not since_dt:
-        since_dt = now - timedelta(hours=int(hours))
+    since_dt = datetime.now(UTC) - timedelta(hours=int(hours)) if hours else None
 
     # Guruhlarni kompaniyalar bo'yicha yig'amiz (dublikatsiz — bir guruh ikkita
     # company_id ostida ikki marta hisoblanmasin).
@@ -145,19 +138,14 @@ async def analyze_companies(
     meta: dict = {
         "company_ids": [str(c) for c in company_ids],
         "groups": [{"group_id": gid, "title": t} for gid, t in groups_by_id.items()],
-        "window": {
-            "since": since_dt.isoformat() if since_dt else None,
-            "until": until_dt.isoformat() if until_dt else None,
-        },
+        "window": {"since": since_dt.isoformat() if since_dt else None},
     }
     if not groups_by_id:
         return {"answer": None, "meta": {**meta, "messages": 0, "truncated": False, "chars": 0}}
 
-    limit = max_messages or GROUP_ANALYZE_MAX_MESSAGES
-
     async def _fetch(group_id: str, title: str | None) -> list[dict]:
         msgs = await chat_data.fetch_messages_window(
-            group_id, since=since_dt, until=until_dt, max_messages=limit
+            group_id, since=since_dt, max_messages=GROUP_ANALYZE_MAX_MESSAGES
         )
         for m in msgs:
             m["_group_title"] = title or group_id
@@ -193,9 +181,7 @@ async def analyze_companies(
     )
 
     started = datetime.now(UTC)
-    answer, usage = await llm_chat(
-        _SYSTEM, user_prompt, model=model, endpoint_label="group-analyze"
-    )
+    answer, usage = await llm_chat(_SYSTEM, user_prompt, endpoint_label="group-analyze")
     latency_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
 
     return {

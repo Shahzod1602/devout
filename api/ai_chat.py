@@ -13,7 +13,6 @@ Ma'lumot manbai `chat_data.py` — xuddi shu funksiyalarni `api/chatlog.py`
 """
 import hmac
 import logging
-from typing import Any
 
 import chat_data
 from config import AI_API_TOKEN, LLM_API_KEY
@@ -75,13 +74,9 @@ class AnalyzeRequest(BaseModel):
         description="Erkin so'rov: nima tahlil qilinsin. Berilmasa — standart operatsion "
                     "xulosa prompti ishlatiladi (NEEDS ATTENTION / RESOLVED TODAY / SNAPSHOT).",
     )
-    hours: int | None = Field(None, ge=1, le=24 * 90, description="Oxirgi N soat (since'siz)")
-    since: str | None = Field(None, description="ISO sana/vaqt (UTC), masalan 2026-08-10T00:00:00")
-    until: str | None = Field(None, description="ISO sana/vaqt (UTC)")
-    max_messages: int | None = Field(
-        None, ge=1, le=5000, description="GURUH BOSHIGA limit (umumiy emas)",
+    hours: int | None = Field(
+        None, ge=1, le=24 * 90, description="Oxirgi N soat. Bermasangiz — butun tarix.",
     )
-    model: str | None = Field(None, description="Model override (default LLM_MODEL)")
     ceo_id: str | int | None = Field(
         None,
         description="Telegram chat/user ID. Berilsa javob JSON'da QAYTMAYDI — "
@@ -97,9 +92,8 @@ async def ai_chat_analyze(req: AnalyzeRequest):
 
     Har `company_id` uchun `chat_data.fetch_groups` orqali guruhlar topiladi,
     ularning xabarlari birlashtirilib bitta transkriptga aylantiriladi (DB'dagi
-    `chat_messages` → transkript → model → javob matni). `since` va `hours`
-    ikkalasi berilsa `since` ustun. Guruh topilmasa — o'sha kompaniyaga oid
-    yozishma yo'q, xato emas (bo'sh javob).
+    `chat_messages` → transkript → model → javob matni). Guruh topilmasa — o'sha
+    kompaniyaga oid yozishma yo'q, xato emas (bo'sh javob).
 
     `prompt` ixtiyoriy — berilmasa `group_analyze.DEFAULT_PROMPT` (exception-first
     operatsion xulosa: NEEDS ATTENTION / RESOLVED TODAY / SNAPSHOT) ishlatiladi,
@@ -118,14 +112,9 @@ async def ai_chat_analyze(req: AnalyzeRequest):
     company_ids = [str(c) for c in req.company_ids]
     prompt = (req.prompt or "").strip() or DEFAULT_PROMPT
 
-    window: dict[str, Any] = {
-        "hours": req.hours, "since": req.since, "until": req.until,
-        "max_messages": req.max_messages, "model": req.model,
-    }
-
     if req.ceo_id is not None:
         schedule_analyze_and_deliver(
-            str(req.ceo_id), company_ids=company_ids, prompt=prompt, **window
+            str(req.ceo_id), company_ids=company_ids, prompt=prompt, hours=req.hours
         )
         logger.info("ai_chat_analyze: fon tahlili boshlandi (companies=%s → chat=%s)",
                     company_ids, req.ceo_id)
@@ -135,7 +124,7 @@ async def ai_chat_analyze(req: AnalyzeRequest):
         )
 
     try:
-        return await analyze_companies(company_ids, prompt, **window)
+        return await analyze_companies(company_ids, prompt, hours=req.hours)
     except LlmError as e:
         logger.warning("ai_chat_analyze: model xatosi (companies=%s): %s", company_ids, e)
         raise HTTPException(status_code=502, detail=f"AI javob bermadi: {e}") from None
