@@ -23,6 +23,12 @@ Dizayn qarorlari:
   boshqasi hisobiga butunlay yutib yubormaydi.
 - **Media** matn sifatida `[photo]` / `[voice]` ko'rinishida — fayl mazmuni
   tahlilga kirmaydi (blob DB'da yo'q, faqat file_id).
+- **Ko'p kompaniyada javob KOMPANIYA BO'YICHA bo'linadi** (2026-08-13, foydalanuvchi
+  so'rovi): promptga `COMPANIES:` ro'yxati (har biriga tegishli guruhlar bilan)
+  qo'shiladi, transkript qatorlari `[Cxx·GuruhNomi]` prefiksi oladi (faqat >1
+  kompaniya bo'lsa — bitta kompaniyada eski, shovqinsiz format qoladi), va
+  `DEFAULT_PROMPT` modelga har kompaniya uchun alohida sarlavha (`🏢 COMPANY <id>`)
+  qo'yishni buyuradi.
 """
 from __future__ import annotations
 
@@ -51,20 +57,29 @@ _SYSTEM = (
 
 # `prompt` ixtiyoriy — berilmasa shu ishlatiladi (2026-08-13, foydalanuvchi so'rovi:
 # har safar prompt yozish shart bo'lmasin, `company_ids` + `hours` yetarli bo'lsin).
+# 2026-08-13 v2: bir nechta company_ids berilganda javob KOMPANIYA BO'YICHA bo'linadi
+# (foydalanuvchi so'rovi) — promptdagi COMPANIES ro'yxatiga va transkriptdagi
+# [company·group] prefiksiga tayanadi (analyze_companies quradi).
 DEFAULT_PROMPT = (
-    "Give me today's operational summary for this company. Structure your answer as:\n\n"
+    "Give me today's operational summary. If the COMPANIES list above has more than one "
+    "company, structure your answer BY COMPANY — one \"🏢 COMPANY <id>\" heading per company, "
+    "each with its own NEEDS ATTENTION and RESOLVED TODAY underneath, so nothing from one "
+    "company's chats gets attributed to another. If there is only one company, skip the "
+    "heading and go straight into the sections below.\n\n"
     "🚨 NEEDS ATTENTION — anything unresolved or concerning: drivers not responding, "
     "loads stuck/delayed at pickup or delivery, missing or rejected documents "
     "(BOL/POD), breakdowns, detention, payment disputes. For each item: which "
     "group/load, what happened, how long it's been open, who last engaged with it.\n\n"
     "✅ RESOLVED TODAY — loads delivered, documents accepted, issues closed since "
     "yesterday.\n\n"
-    "📈 SNAPSHOT — rough counts: active loads, deliveries completed, open document "
-    "issues, drivers not checked in.\n\n"
+    "📈 SNAPSHOT — one combined set of rough counts at the very end (active loads, "
+    "deliveries completed, open document issues, drivers not checked in), broken down "
+    "per company only if the numbers are large enough that a single total would hide "
+    "which company needs the attention.\n\n"
     "Rules: use ONLY what's in the transcript — don't guess or infer beyond what's "
     "written. Cite load numbers, driver names, and timestamps whenever you state a "
-    "fact. If a section has nothing to report, say so briefly instead of omitting "
-    "it. Keep it tight — bullet points, no fluff."
+    "fact. If a section (or a whole company) has nothing to report, say so briefly "
+    "instead of omitting it. Keep it tight — bullet points, no fluff."
 )
 
 
@@ -129,29 +144,47 @@ async def analyze_companies(
     since_dt = datetime.now(UTC) - timedelta(hours=int(hours)) if hours else None
 
     # Guruhlarni kompaniyalar bo'yicha yig'amiz (dublikatsiz — bir guruh ikkita
-    # company_id ostida ikki marta hisoblanmasin).
-    groups_by_id: dict[str, str | None] = {}
+    # company_id ostida ikki marta hisoblanmasin). company_id har guruhga
+    # yopishtiriladi — javobni kompaniya bo'yicha bo'lish uchun kerak.
+    groups_by_id: dict[str, dict] = {}
     for cid in company_ids:
         for g in await chat_data.fetch_groups(str(cid)):
-            groups_by_id[str(g["group_id"])] = g.get("title")
+            gid = str(g["group_id"])
+            groups_by_id[gid] = {
+                "title": g.get("title"),
+                "company_id": str(g.get("company_id") or cid),
+            }
 
     meta: dict = {
         "company_ids": [str(c) for c in company_ids],
-        "groups": [{"group_id": gid, "title": t} for gid, t in groups_by_id.items()],
+        "groups": [
+            {"group_id": gid, "title": info["title"], "company_id": info["company_id"]}
+            for gid, info in groups_by_id.items()
+        ],
         "window": {"since": since_dt.isoformat() if since_dt else None},
     }
     if not groups_by_id:
         return {"answer": None, "meta": {**meta, "messages": 0, "truncated": False, "chars": 0}}
 
-    async def _fetch(group_id: str, title: str | None) -> list[dict]:
+    by_company: dict[str, list[str]] = {}
+    for info in groups_by_id.values():
+        by_company.setdefault(info["company_id"], []).append(info["title"] or "?")
+    multi_company = len(by_company) > 1
+
+    async def _fetch(group_id: str, title: str | None, company_id: str) -> list[dict]:
         msgs = await chat_data.fetch_messages_window(
             group_id, since=since_dt, max_messages=GROUP_ANALYZE_MAX_MESSAGES
         )
+        # Bir nechta kompaniya bo'lsa, har xabar qaysi kompaniyadan ekani transkriptda
+        # ham ko'rinsin — model javobni kompaniya bo'yicha to'g'ri bo'la olsin.
+        label = f"C{company_id}·{title}" if multi_company and title else title
         for m in msgs:
-            m["_group_title"] = title or group_id
+            m["_group_title"] = label or group_id
         return msgs
 
-    fetched = await asyncio.gather(*(_fetch(gid, t) for gid, t in groups_by_id.items()))
+    fetched = await asyncio.gather(
+        *(_fetch(gid, info["title"], info["company_id"]) for gid, info in groups_by_id.items())
+    )
     all_messages = [m for msgs in fetched for m in msgs]
     # Guruhlar aralash-quralash — vaqt bo'yicha bitta oqimga tekislaymiz, shunda
     # kesish (build_transcript) BARCHA guruhlar bo'ylab adolatli bo'ladi (bitta
@@ -165,17 +198,19 @@ async def analyze_companies(
     first_ts = chat_data.as_dt(all_messages[0].get("created_at"))
     last_ts = chat_data.as_dt(all_messages[-1].get("created_at"))
 
-    names = [t or gid for gid, t in groups_by_id.items()]
-    group_list = ", ".join(names) if len(names) <= _MAX_LISTED_GROUPS else f"{len(names)} groups"
+    companies_lines = []
+    for cid, names in by_company.items():
+        listed = ", ".join(names) if len(names) <= _MAX_LISTED_GROUPS else f"{len(names)} groups"
+        companies_lines.append(f"- Company {cid} — {len(names)} group(s): {listed}")
+    companies_block = "\n".join(companies_lines)
 
     user_prompt = (
-        f"COMPANIES: {', '.join(meta['company_ids'])}\n"
-        f"GROUPS ({len(groups_by_id)}): {group_list}\n"
+        f"COMPANIES ({len(by_company)}):\n{companies_block}\n\n"
         f"MESSAGES: {len(all_messages)}"
         f"{' (oldest ones truncated)' if truncated else ''}\n"
         f"PERIOD (UTC): {first_ts.isoformat() if first_ts else '?'}"
         f" → {last_ts.isoformat() if last_ts else '?'}\n\n"
-        f"=== TRANSCRIPT (oldest → newest, [group name] prefix per line) ===\n"
+        f"=== TRANSCRIPT (oldest → newest, [company·group] prefix per line) ===\n"
         f"{transcript}\n=== END TRANSCRIPT ===\n\n"
         f"QUESTION / TASK:\n{prompt.strip()}"
     )
