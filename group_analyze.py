@@ -49,6 +49,24 @@ _SYSTEM = (
     "- Be concise and concrete; prefer bullet points for lists of findings."
 )
 
+# `prompt` ixtiyoriy — berilmasa shu ishlatiladi (2026-08-13, foydalanuvchi so'rovi:
+# har safar prompt yozish shart bo'lmasin, `company_ids` + `hours` yetarli bo'lsin).
+DEFAULT_PROMPT = (
+    "Give me today's operational summary for this company. Structure your answer as:\n\n"
+    "🚨 NEEDS ATTENTION — anything unresolved or concerning: drivers not responding, "
+    "loads stuck/delayed at pickup or delivery, missing or rejected documents "
+    "(BOL/POD), breakdowns, detention, payment disputes. For each item: which "
+    "group/load, what happened, how long it's been open, who last engaged with it.\n\n"
+    "✅ RESOLVED TODAY — loads delivered, documents accepted, issues closed since "
+    "yesterday.\n\n"
+    "📈 SNAPSHOT — rough counts: active loads, deliveries completed, open document "
+    "issues, drivers not checked in.\n\n"
+    "Rules: use ONLY what's in the transcript — don't guess or infer beyond what's "
+    "written. Cite load numbers, driver names, and timestamps whenever you state a "
+    "fact. If a section has nothing to report, say so briefly instead of omitting "
+    "it. Keep it tight — bullet points, no fluff."
+)
+
 
 def build_transcript(
     messages: list[dict], *, max_chars: int = GROUP_ANALYZE_MAX_CHARS

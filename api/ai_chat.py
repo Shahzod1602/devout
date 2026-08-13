@@ -20,7 +20,7 @@ from config import AI_API_TOKEN, LLM_API_KEY
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
-from group_analyze import analyze_companies, schedule_analyze_and_deliver
+from group_analyze import DEFAULT_PROMPT, analyze_companies, schedule_analyze_and_deliver
 from llm_gateway import LlmError
 from pydantic import BaseModel, Field
 
@@ -70,7 +70,11 @@ class AnalyzeRequest(BaseModel):
                     "yig'iladi va BITTA umumiy javobga birlashtiriladi (tenant "
                     "izolyatsiyasi tabiiy — boshqa kompaniya guruhi qatnashmaydi).",
     )
-    prompt: str = Field(..., min_length=1, description="Erkin so'rov: nima tahlil qilinsin")
+    prompt: str | None = Field(
+        None, min_length=1,
+        description="Erkin so'rov: nima tahlil qilinsin. Berilmasa — standart operatsion "
+                    "xulosa prompti ishlatiladi (NEEDS ATTENTION / RESOLVED TODAY / SNAPSHOT).",
+    )
     hours: int | None = Field(None, ge=1, le=24 * 90, description="Oxirgi N soat (since'siz)")
     since: str | None = Field(None, description="ISO sana/vaqt (UTC), masalan 2026-08-10T00:00:00")
     until: str | None = Field(None, description="ISO sana/vaqt (UTC)")
@@ -97,6 +101,10 @@ async def ai_chat_analyze(req: AnalyzeRequest):
     ikkalasi berilsa `since` ustun. Guruh topilmasa — o'sha kompaniyaga oid
     yozishma yo'q, xato emas (bo'sh javob).
 
+    `prompt` ixtiyoriy — berilmasa `group_analyze.DEFAULT_PROMPT` (exception-first
+    operatsion xulosa: NEEDS ATTENTION / RESOLVED TODAY / SNAPSHOT) ishlatiladi,
+    ya'ni `company_ids` + `hours` yetarli — har safar matn yozish shart emas.
+
     **`ceo_id` berilmasa** — sinxron: javob JSON'da qaytadi, Telegram'ga hech
     nima yuborilmaydi.
     **`ceo_id` berilsa** — 202 darhol qaytadi, tahlil fonda ishlaydi va natija
@@ -108,6 +116,7 @@ async def ai_chat_analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=503, detail="LLM_API_KEY o'rnatilmagan — tahlil o'chiq")
 
     company_ids = [str(c) for c in req.company_ids]
+    prompt = (req.prompt or "").strip() or DEFAULT_PROMPT
 
     window: dict[str, Any] = {
         "hours": req.hours, "since": req.since, "until": req.until,
@@ -116,7 +125,7 @@ async def ai_chat_analyze(req: AnalyzeRequest):
 
     if req.ceo_id is not None:
         schedule_analyze_and_deliver(
-            str(req.ceo_id), company_ids=company_ids, prompt=req.prompt, **window
+            str(req.ceo_id), company_ids=company_ids, prompt=prompt, **window
         )
         logger.info("ai_chat_analyze: fon tahlili boshlandi (companies=%s → chat=%s)",
                     company_ids, req.ceo_id)
@@ -126,7 +135,7 @@ async def ai_chat_analyze(req: AnalyzeRequest):
         )
 
     try:
-        return await analyze_companies(company_ids, req.prompt, **window)
+        return await analyze_companies(company_ids, prompt, **window)
     except LlmError as e:
         logger.warning("ai_chat_analyze: model xatosi (companies=%s): %s", company_ids, e)
         raise HTTPException(status_code=502, detail=f"AI javob bermadi: {e}") from None
