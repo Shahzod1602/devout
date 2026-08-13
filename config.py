@@ -197,7 +197,16 @@ LLM_ENDPOINT = os.environ.get("LLM_ENDPOINT", "https://opencode.ai/zen/v1/chat/c
 LLM_MODEL = os.environ.get("LLM_MODEL", "deepseek-v4-flash-free")
 # Z.ai-ga xos maydon; BO'SH bo'lsa umuman yuborilmaydi (opencode uni kutmaydi).
 LLM_THINKING = os.environ.get("LLM_THINKING", "").strip().lower()
-LLM_TIMEOUT_S = int(os.environ.get("LLM_TIMEOUT_S", "90"))
+# 2026-08-13 PROD jonli sinov (company_id=40, 115 guruh): eski max_tokens=4000
+# reasoning model'ning butun budjetini ichki fikrlashga ("reasoning_content")
+# yedirib, yakuniy `content`ni bo'sh qoldirdi (`llm_gateway.py` "model bo'sh
+# javob qaytardi" — ikki marta barqaror takrorlandi, tasodifiy emas). Ko'p
+# guruhli (company_ids) tahlil bitta-guruhlikdan ANCHA katta/murakkab bo'lishi
+# mumkin — max_tokens shunga yarasha keng qilindi (bepul tier, narx yo'q; bu
+# CEILING, model o'zi kerakcha qisqa javob qaytarishda erkin). Timeout ham mos
+# oshirildi (ceo_id fon rejimida hech qanday HTTP mijoz kutmaydi — xavfsiz).
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "100000"))
+LLM_TIMEOUT_S = int(os.environ.get("LLM_TIMEOUT_S", "240"))
 LLM_MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "4"))
 # Transkript hajmi — modelga yuborilishidan oldin ENG ESKI xabarlardan kesiladi.
 GROUP_ANALYZE_MAX_CHARS = int(os.environ.get("GROUP_ANALYZE_MAX_CHARS", "60000"))

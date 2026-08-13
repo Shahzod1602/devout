@@ -30,6 +30,7 @@ from config import (
     LLM_API_KEY,
     LLM_ENDPOINT,
     LLM_MAX_CONCURRENCY,
+    LLM_MAX_TOKENS,
     LLM_MODEL,
     LLM_THINKING,
     LLM_TIMEOUT_S,
@@ -84,7 +85,7 @@ async def llm_chat(
     prompt: str,
     *,
     model: str | None = None,
-    max_tokens: int = 4000,
+    max_tokens: int = LLM_MAX_TOKENS,
     temperature: float = 0.2,
     endpoint_label: str = "llm",
 ) -> tuple[str, dict]:

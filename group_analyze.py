@@ -216,7 +216,9 @@ def schedule_analyze_and_deliver(chat_id: str | int, **kwargs) -> None:
 async def analyze_and_deliver(chat_id: str | int, company_ids: list[str], prompt: str, **kwargs) -> dict:
     """Tahlil + yetkazish. HECH QACHON raise qilmaydi — fon task'da hech kim ushlamaydi.
 
-    Xato bo'lsa error-guruhga hisobot ketadi (jim yiqilish yo'q).
+    Xato bo'lsa error-guruhga hisobot ketadi VA CEO chatiga ham qisqa xabar
+    yuboriladi — jim qolish "hali tayyorlanyapti"dan farq qilmaydi, CEO
+    hech qachon kelmaydigan javobni kutib qolmasin (2026-08-13 PROD topilmasi).
     """
     label = ",".join(str(c) for c in company_ids)
     try:
@@ -224,6 +226,12 @@ async def analyze_and_deliver(chat_id: str | int, company_ids: list[str], prompt
     except Exception as e:
         logger.exception("analyze_and_deliver: tahlil yiqildi (companies=%s)", label)
         await _report_error(f"kompaniya tahlili yiqildi (companies={label}): {e}", label)
+        try:
+            await deliver_text(
+                chat_id, "⚠️ Tahlil vaqtincha ishlamadi. Birozdan so'ng qayta urinib ko'ring."
+            )
+        except Exception:
+            logger.exception("analyze_and_deliver: xato xabarini ham yuborib bo'lmadi (chat=%s)", chat_id)
         return {"ok": False, "stage": "analyze", "error": str(e)}
 
     meta = result["meta"]
