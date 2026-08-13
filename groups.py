@@ -19,6 +19,7 @@ from datetime import datetime
 import aiohttp
 from config import (
     BASE_URL,
+    CEO_RECIPIENTS_ANALYZE_URL,
     CEO_RECIPIENTS_BIND_URL,
     DB_PATH,
     INTERNAL_VALIDATE_TOKEN_URL,
@@ -506,3 +507,41 @@ async def bind_ceo_recipient(access_token, deep_link_token, chat_id, name=None):
     except Exception as e:
         logger.exception("❌ CEO bind error")
         return {"success": False, "error": str(e), "message": f"Bind error: {str(e)}"}
+
+
+async def trigger_ceo_analyze(access_token, chat_id, hours):
+    """CEO tugmasini (1/6/12/24 soat) bosganda backend'ga tahlil so'rovini boshlab beradi.
+
+    POST /ceo-recipients/analyze — {chatId, hours}. Backend `chatId`dan
+    (avvalgi `/ceo-recipients/bind` orqali bilib olingan) `company_id`ni O'ZI
+    topadi va o'zi bizning `POST /api/ai/chat/analyze`ga (company_ids+hours+
+    ceo_id bilan) qaytib POST qiladi — haqiqiy tahlil natijasi SHU BOTGA qaytib
+    keladi (odatdagi group_analyze.analyze_and_deliver yo'lagi bilan). Bu funksiya
+    faqat so'rovni ISHGA TUSHIRADI, natijani o'zi kutmaydi/qaytarmaydi.
+    """
+    payload = {"chatId": str(chat_id), "hours": hours}
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+            logger.info("🔔 Triggering CEO analyze for chat %s (hours=%s)...", chat_id, hours)
+            async with session.post(
+                CEO_RECIPIENTS_ANALYZE_URL, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                response_text = await resp.text()
+                logger.info("📨 CEO analyze trigger response status: %s", resp.status)
+                try:
+                    data = json.loads(response_text) if response_text else None
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    data = None
+                return {
+                    "success": 200 <= resp.status < 300,
+                    "status": resp.status,
+                    "data": data if isinstance(data, dict) else None,
+                }
+    except Exception as e:
+        logger.exception("❌ CEO analyze trigger error")
+        return {"success": False, "error": str(e)}

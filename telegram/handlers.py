@@ -39,6 +39,7 @@ from groups import (
     save_group_token,
     save_started_groups,
     save_team_driver_id,
+    trigger_ceo_analyze,
     validate_bot_token,
     validate_bot_token_internal,
     wait_for_server_and_check,
@@ -161,12 +162,56 @@ async def ceo_bind_cmd(msg: types.Message, command: CommandObject):
 
     result = await bind_ceo_recipient(access_token, token, chat_id, name)
     if result.get("success"):
-        await msg.answer("✅ Connected. Your daily report will arrive in this chat.")
+        kb = InlineKeyboardBuilder()
+        for h in (1, 6, 12, 24):
+            kb.button(text=f"{h} soat", callback_data=f"ceo_analyze:{h}")
+        kb.adjust(4)
+        await msg.answer(
+            "✅ Connected. Your daily report will arrive in this chat.\n\n"
+            "Quick report — tap a window:",
+            reply_markup=kb.as_markup(),
+        )
         await send_action_log(chat_id, f"CEO recipient bound: {name or chat_id}")
     elif result.get("status") in (400, 404):
         await msg.answer("❌ This link is invalid or expired. Ask your admin for a new one.")
     else:
         await msg.answer("⚠️ Temporary connection issue, please try again.")
+
+
+@router.callback_query(F.data.startswith("ceo_analyze:"))
+async def ceo_analyze_callback(callback: types.CallbackQuery):
+    """CEO tez-hisobot tugmasi (1/6/12/24 soat) — backend'ga trigger yuboradi.
+
+    Haqiqiy tahlil BU YERDA sodir bo'lmaydi: backend `chatId`dan `company_id`ni
+    o'zi topib, o'zi bizning `/api/ai/chat/analyze`ga qaytib POST qiladi —
+    natija odatdagi `group_analyze.analyze_and_deliver` yo'lagi bilan shu
+    chatga keladi (bir necha soniyadan bir necha o'n soniyagacha). Shuning
+    uchun bu yerda faqat tezkor "qabul qilindi" tasdig'i beriladi.
+    """
+    if callback.message.chat.type != "private":
+        await callback.answer()
+        return
+
+    if not CEO_BIND_ENABLE:
+        await callback.answer("⚠️ Unavailable right now.", show_alert=True)
+        return
+
+    try:
+        hours = int(callback.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        await callback.answer("❌ Invalid request.", show_alert=True)
+        return
+
+    await callback.answer("🔄 Preparing your report...")
+    chat_id = callback.message.chat.id
+    access_token = await get_api_token()
+    if not access_token:
+        await callback.message.answer("⚠️ Temporary connection issue, please try again.")
+        return
+
+    result = await trigger_ceo_analyze(access_token, chat_id, hours)
+    if not result.get("success"):
+        await callback.message.answer("⚠️ Could not start the report. Please try again later.")
 
 
 # ====== /start + driver setup ======
