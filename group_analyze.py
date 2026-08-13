@@ -29,6 +29,16 @@ Dizayn qarorlari:
   kompaniya bo'lsa — bitta kompaniyada eski, shovqinsiz format qoladi), va
   `DEFAULT_PROMPT` modelga har kompaniya uchun alohida sarlavha (`🏢 COMPANY <id>`)
   qo'yishni buyuradi.
+- **LLM: Gemini, deepseek EMAS** (2026-08-13, jonli xato + foydalanuvchi qarori).
+  Dastlab `llm_gateway.llm_chat` (deepseek-v4-flash-free, opencode.ai/zen bepul
+  tier) ishlatilgan — Gemini'dan ATAYLAB chetlashtirilgan edi, chunki paperwork
+  bilan bir xil Vertex kvotasini bo'lishadi (2026-07-10 burst-429 darsi). Lekin
+  bepul tier'ning O'ZI TEST botda rate-limitga (429 FreeUsageLimitError, 4 ketma-ket
+  urinish yiqildi) urildi. Foydalanuvchi qarori: bu tahlil kuniga ~1 marta bo'lgani
+  uchun Vertex-bo'lishish xavfi past — quyidagi `llm_chat` endi
+  `paperwork.gemini.gemini_text_completion` (GROUP_ANALYZE_GEMINI_MODEL,
+  thinking_budget=0) chaqiradi. `llm_gateway.py` (deepseek) DASTURDA qoladi —
+  rollback kerak bo'lsa shu funksiya tanasini eskisiga qaytarish kifoya.
 """
 from __future__ import annotations
 
@@ -37,11 +47,40 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 import chat_data
-from config import GROUP_ANALYZE_MAX_CHARS, GROUP_ANALYZE_MAX_MESSAGES
-from llm_gateway import llm_chat
+from config import (
+    GROUP_ANALYZE_GEMINI_MODEL,
+    GROUP_ANALYZE_MAX_CHARS,
+    GROUP_ANALYZE_MAX_MESSAGES,
+    GROUP_ANALYZE_MAX_TOKENS,
+)
+from llm_gateway import LlmError
+from paperwork.gemini import gemini_text_completion
+from stats import current_gemini_endpoint
 from tg_deliver import deliver_text
 
 logger = logging.getLogger(__name__)
+
+
+async def llm_chat(
+    system: str, prompt: str, *, model: str | None = None, endpoint_label: str = "group-analyze",
+) -> tuple[str, dict]:
+    """`(javob_matni, usage)` — Gemini orqali (bu modul yuqoridagi izohi: nega
+    deepseek emas). `usage` bo'sh dict qaytadi (haqiqiy token-hisob
+    `record_gemini_call` orqali stats DB'ga allaqachon yoziladi, admin panelda
+    `endpoint_label` bilan ko'rinadi — chaqiruvchiga qayta hisoblash shart emas).
+    """
+    current_gemini_endpoint.set(endpoint_label)
+    try:
+        answer = await gemini_text_completion(
+            system, prompt,
+            model=model or GROUP_ANALYZE_GEMINI_MODEL,
+            max_tokens=GROUP_ANALYZE_MAX_TOKENS,
+            temperature=0.2,
+            thinking_budget=0,
+        )
+    except Exception as exc:
+        raise LlmError(str(exc)) from exc
+    return answer, {}
 
 _SYSTEM = (
     "You are an analyst reading Telegram group chats of a US trucking dispatch company. "

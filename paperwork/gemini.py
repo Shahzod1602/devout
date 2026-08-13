@@ -187,9 +187,12 @@ _TEXT_BACKOFF_BASE = 1.0   # 1s, 2s (cap) + 0..0.5s jitter — worst-case ~3.5s 
 _TEXT_BACKOFF_CAP = 2.0
 
 
-async def _text_generate_with_fallback(contents, config: genai_types.GenerateContentConfig) -> str:
-    """GEMINI_TEXT_MODEL chaqiruvi — 429'da qisqa backoff, 2 ketma-ket throttle'dan
-    keyin GEMINI_FALLBACK_MODEL@GEMINI_FALLBACK_LOCATION bilan davom etadi.
+async def _text_generate_with_fallback(
+    contents, config: genai_types.GenerateContentConfig, *, primary_model: str | None = None,
+) -> str:
+    """GEMINI_TEXT_MODEL (yoki `primary_model` berilsa o'sha) chaqiruvi — 429'da qisqa
+    backoff, 2 ketma-ket throttle'dan keyin GEMINI_FALLBACK_MODEL@GEMINI_FALLBACK_LOCATION
+    bilan davom etadi.
 
     Rasm-yo'lak bilan bir xil semantika: yopishqoq EMAS (har yangi so'rov asosiy
     modeldan boshlaydi), har urinish record_gemini_call'ga HAQIQIY model bilan
@@ -206,7 +209,7 @@ async def _text_generate_with_fallback(contents, config: genai_types.GenerateCon
     )
     for attempt in range(_TEXT_MAX_RETRIES):
         client = get_fallback_client() if use_fallback else get_genai_client()
-        model = GEMINI_FALLBACK_MODEL if use_fallback else GEMINI_TEXT_MODEL
+        model = GEMINI_FALLBACK_MODEL if use_fallback else (primary_model or GEMINI_TEXT_MODEL)
         call_start = time.time()
         response = None
         try:
@@ -252,23 +255,33 @@ async def gemini_text_completion(
     *,
     max_tokens: int = 60,
     temperature: float = 0.1,
+    model: str | None = None,
+    thinking_budget: int | None = None,
 ) -> str:
     """Matnli (rasm'siz) Gemini chaqiruvi — sobiq gpt-4o-mini o'rnida
-    (classify_message / summarize_text / detect_priority).
+    (classify_message / summarize_text / detect_priority / group_analyze.llm_chat).
 
     2026-07-17: OpenAI hisobida insufficient_quota (kredit tugagan) — GEMINI_TEXT_MODEL
     (flash-lite) ga ko'chirildi. 429'da _text_generate_with_fallback qisqa retry +
     regional zaxira qiladi; boshqa xatoda RAISE — chaqiruvchilarning mavjud
     fail-closed try/except'lari o'z default'iga tushadi.
+
+    `model` berilsa GEMINI_TEXT_MODEL o'rniga o'sha ishlatiladi (429/5xx'da baribir
+    GEMINI_FALLBACK_MODEL'ga o'tadi — zaxira umumiy). `thinking_budget` berilsa
+    (masalan 0) asosiy chaqiruvga ham qo'yiladi — flash-lite'dan boshqa (thinking-model)
+    override berilganda kichik max_output_tokens butun budjetni fikrlashga
+    yeb, bo'sh javob qaytarmasin (memory: paperwork/fallback'dagi bir xil dars).
     """
-    return await _text_generate_with_fallback(
-        prompt,
-        genai_types.GenerateContentConfig(
-            max_output_tokens=max_tokens,
-            temperature=temperature,
-            system_instruction=system,
-        ),
+    config = genai_types.GenerateContentConfig(
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+        system_instruction=system,
     )
+    if thinking_budget is not None:
+        config = config.model_copy(
+            update={"thinking_config": genai_types.ThinkingConfig(thinking_budget=thinking_budget)},
+        )
+    return await _text_generate_with_fallback(prompt, config, primary_model=model)
 
 
 async def gemini_transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:

@@ -184,8 +184,14 @@ CHAT_LOG_ENABLE = os.environ.get("CHAT_LOG_ENABLE", "1").strip() == "1"
 AI_API_TOKEN = os.environ.get("AI_API_TOKEN", "").strip()
 
 # === LLM gateway — guruh chat tahlili (POST /api/ai/chat/analyze) ===
-# Ataylab Gemini EMAS: tahlil uzun transkript + burst bo'lishi mumkin, Gemini esa
-# paperwork bilan bir xil Vertex kvotasini bo'lishadi (2026-07-10 429 darsi).
+# TARIX: dastlab ataylab Gemini EMAS edi (uzun transkript + burst, Gemini paperwork
+# bilan bir xil Vertex kvotasini bo'lishadi — 2026-07-10 429 darsi). 2026-08-13:
+# haqiqiy ishlatishga o'tildi — deepseek-v4-flash-free (bepul tier, opencode.ai/zen)
+# TEST botda jonli rate-limitga (429 FreeUsageLimitError) urildi. Foydalanuvchi qarori:
+# bu tahlil kuniga ~1 marta bo'lgani uchun Vertex-bo'lishish xavfi past — asosiy yo'l
+# endi Gemini (`group_analyze.llm_chat` → `paperwork.gemini.gemini_text_completion`,
+# GROUP_ANALYZE_GEMINI_MODEL). Bu LLM_* gateway (deepseek) DASTURDA qoladi — zaxira/
+# rollback yo'li, `llm_gateway.py`da ishlatilmasa ham testlari bilan saqlanadi.
 # Kalit yo'q → endpoint 503 (butunlay o'chiq), boshqa hech narsaga ta'sir qilmaydi.
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
 # DEFAULT: opencode.ai/zen gateway (OpenAI-mos) + bepul model.
@@ -212,6 +218,14 @@ LLM_MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "4"))
 # Transkript hajmi — modelga yuborilishidan oldin ENG ESKI xabarlardan kesiladi.
 GROUP_ANALYZE_MAX_CHARS = int(os.environ.get("GROUP_ANALYZE_MAX_CHARS", "60000"))
 GROUP_ANALYZE_MAX_MESSAGES = int(os.environ.get("GROUP_ANALYZE_MAX_MESSAGES", "3000"))
+# Gemini modeli (2026-08-13, deepseek fallback'dan o'tish) — paperwork'ning o'zi
+# A/B'da tasdiqlagan model (GEMINI_BOT_MODEL bilan bir xil default, lekin MUSTAQIL
+# env — paperwork'ga tegishli o'zgarish bu yerga sirg'alib kirmasin). Thinking
+# doim 0 (gemini_text_completion'ga thinking_budget=0 orqali).
+GROUP_ANALYZE_GEMINI_MODEL = os.environ.get("GROUP_ANALYZE_GEMINI_MODEL", "gemini-3-flash-preview")
+# Flash-klass modellarning max_output_tokens shipi ancha past (eski LLM_MAX_TOKENS=100000
+# deepseek bepul-tier'iga xos edi, Gemini'ga to'g'ri kelmaydi) — CEO hisoboti uchun keng.
+GROUP_ANALYZE_MAX_TOKENS = int(os.environ.get("GROUP_ANALYZE_MAX_TOKENS", "8192"))
 
 # === Control-plane auth (audit v3 H2) ===
 # Backend webhook endpointlari (api/routes.py: /send-message, /accepted,
