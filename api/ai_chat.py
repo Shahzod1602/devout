@@ -20,7 +20,7 @@ from config import AI_API_TOKEN, LLM_API_KEY
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
-from group_analyze import analyze_group, schedule_analyze_and_deliver
+from group_analyze import analyze_companies, schedule_analyze_and_deliver
 from llm_gateway import LlmError
 from pydantic import BaseModel, Field
 
@@ -61,20 +61,22 @@ async def ai_chat_file(msg_pk_id: int):
 
 
 class AnalyzeRequest(BaseModel):
-    # group_id/company_id — chaqiruvchilar ba'zan son, ba'zan satr yuboradi
-    # (token cache'da companyId int, JS tomonida string). Ikkalasi ham qabul
-    # qilinadi va solishtirish har doim STRING'da bo'ladi.
-    group_id: str | int = Field(..., description="Telegram guruh ID (masalan '-1002345678')")
-    company_id: str | int | None = Field(
-        None,
-        description="Berilsa — guruh AYNAN shu kompaniyaniki ekani tekshiriladi, "
-                    "aks holda 403 (tenant izolyatsiyasi).",
+    # company_ids — chaqiruvchilar ba'zan son, ba'zan satr yuboradi (token
+    # cache'da companyId int, JS tomonida string). Ikkalasi ham qabul qilinadi,
+    # ichkarida solishtirish har doim STRING'da bo'ladi.
+    company_ids: list[str | int] = Field(
+        ..., min_length=1,
+        description="Kompaniya ID'lari. Har birining BARCHA guruhlari avtomatik "
+                    "yig'iladi va BITTA umumiy javobga birlashtiriladi (tenant "
+                    "izolyatsiyasi tabiiy — boshqa kompaniya guruhi qatnashmaydi).",
     )
     prompt: str = Field(..., min_length=1, description="Erkin so'rov: nima tahlil qilinsin")
     hours: int | None = Field(None, ge=1, le=24 * 90, description="Oxirgi N soat (since'siz)")
     since: str | None = Field(None, description="ISO sana/vaqt (UTC), masalan 2026-08-10T00:00:00")
     until: str | None = Field(None, description="ISO sana/vaqt (UTC)")
-    max_messages: int | None = Field(None, ge=1, le=5000)
+    max_messages: int | None = Field(
+        None, ge=1, le=5000, description="GURUH BOSHIGA limit (umumiy emas)",
+    )
     model: str | None = Field(None, description="Model override (default LLM_MODEL)")
     ceo_id: str | int | None = Field(
         None,
@@ -86,11 +88,14 @@ class AnalyzeRequest(BaseModel):
 
 @router.post("/analyze", dependencies=[Depends(check_ai)])
 async def ai_chat_analyze(req: AnalyzeRequest):
-    """Guruh xabarlarini foydalanuvchi prompti bo'yicha tahlil qiladi (LLM gateway).
+    """Kompaniya(lar)ning BARCHA guruh xabarlarini foydalanuvchi prompti bo'yicha
+    BITTA umumiy javobga tahlil qiladi (LLM gateway).
 
-    DB'dagi `chat_messages` → transkript → model → javob matni.
-    `since` va `hours` ikkalasi berilsa `since` ustun.
-    `company_id` berilsa — guruh o'sha kompaniyaniki ekani tekshiriladi (403).
+    Har `company_id` uchun `chat_data.fetch_groups` orqali guruhlar topiladi,
+    ularning xabarlari birlashtirilib bitta transkriptga aylantiriladi (DB'dagi
+    `chat_messages` → transkript → model → javob matni). `since` va `hours`
+    ikkalasi berilsa `since` ustun. Guruh topilmasa — o'sha kompaniyaga oid
+    yozishma yo'q, xato emas (bo'sh javob).
 
     **`ceo_id` berilmasa** — sinxron: javob JSON'da qaytadi, Telegram'ga hech
     nima yuborilmaydi.
@@ -102,18 +107,7 @@ async def ai_chat_analyze(req: AnalyzeRequest):
     if not LLM_API_KEY:
         raise HTTPException(status_code=503, detail="LLM_API_KEY o'rnatilmagan — tahlil o'chiq")
 
-    group_id = str(req.group_id)
-
-    if req.company_id is not None:
-        # Tenant darvozasi: noto'g'ri filtr = bir kompaniya boshqasining yozishmasini
-        # ko'radi. Egaligi ISBOTLANMAGAN guruh (token cache'da yo'q) ham rad etiladi.
-        owner = chat_data.group_company_id(group_id)
-        if owner is None or owner != str(req.company_id):
-            logger.warning(
-                "ai_chat_analyze: company mos kelmadi (group=%s, so'ralgan=%s, haqiqiy=%s)",
-                group_id, req.company_id, owner,
-            )
-            raise HTTPException(status_code=403, detail="Guruh bu kompaniyaga tegishli emas")
+    company_ids = [str(c) for c in req.company_ids]
 
     window: dict[str, Any] = {
         "hours": req.hours, "since": req.since, "until": req.until,
@@ -122,17 +116,17 @@ async def ai_chat_analyze(req: AnalyzeRequest):
 
     if req.ceo_id is not None:
         schedule_analyze_and_deliver(
-            str(req.ceo_id), group_id=group_id, prompt=req.prompt, **window
+            str(req.ceo_id), company_ids=company_ids, prompt=req.prompt, **window
         )
-        logger.info("ai_chat_analyze: fon tahlili boshlandi (group=%s → chat=%s)",
-                    group_id, req.ceo_id)
+        logger.info("ai_chat_analyze: fon tahlili boshlandi (companies=%s → chat=%s)",
+                    company_ids, req.ceo_id)
         return JSONResponse(
             status_code=202,
-            content={"accepted": True, "group_id": group_id, "ceo_id": str(req.ceo_id)},
+            content={"accepted": True, "company_ids": company_ids, "ceo_id": str(req.ceo_id)},
         )
 
     try:
-        return await analyze_group(group_id, req.prompt, **window)
+        return await analyze_companies(company_ids, req.prompt, **window)
     except LlmError as e:
-        logger.warning("ai_chat_analyze: model xatosi (group=%s): %s", group_id, e)
+        logger.warning("ai_chat_analyze: model xatosi (companies=%s): %s", company_ids, e)
         raise HTTPException(status_code=502, detail=f"AI javob bermadi: {e}") from None

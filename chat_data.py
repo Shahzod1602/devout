@@ -19,18 +19,6 @@ logger = logging.getLogger(__name__)
 _FILE_CONTENT_TYPE = {"photo": "image/jpeg", "voice": "audio/ogg", "video": "video/mp4"}
 
 
-def group_company_id(group_id: str) -> str | None:
-    """Guruhning kompaniyasi (`groups_token_cache.json` RAM cache'idan).
-
-    `chat_groups` jadvalida companyId YO'Q — yagona manba shu cache
-    (`api/routes.py:/company/{id}/groups` ham aynan shundan o'qiydi).
-    Cache'da bo'lmagan guruh uchun None — ya'ni egaligi ISBOTLANMAGAN.
-    """
-    info = load_all_group_tokens().get(str(group_id)) or {}
-    cid = info.get("companyId")
-    return None if cid is None else str(cid)
-
-
 async def fetch_groups(company_id: str | None = None) -> list[dict]:
     async with db_connect(DB_PATH) as db:
         async with db.execute(
