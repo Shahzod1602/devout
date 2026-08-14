@@ -221,6 +221,31 @@ async def start_cmd(msg: types.Message):
     await forward_message_to_history_if_todo(msg)
 
     chat_id = msg.chat.id
+
+    # Private chat: guruh-registratsiya YO'Q — bu botda shaxsiy chat faqat CEO
+    # kunlik-hisobot bog'lanishi uchun ishlatiladi. `ceo_bind_cmd` (yuqorida)
+    # buni `ceo_<token>` argumenti bilan kelgan `/start`da ushlab qoladi, LEKIN
+    # Telegram deep-link argumentini faqat BIRINCHI marta yuboradi — CEO keyinroq
+    # bare `/start` bossa (menyu tugmasi/qayta yozish), argumentsiz shu yerga
+    # tushadi. Pastdagi guruh-check (`/group-links/{id}/by-group`) private chat
+    # uchun MA'NOSIZ (CEO-recipient BOSHQA jadvalda, `/ceo-recipients` — u yerda
+    # hech qachon topilmaydi) va yolg'on "Group is not registered, send admin
+    # token" chiqarardi — CEO allaqachon bog'langan bo'lsa ham (2026-08-14
+    # foydalanuvchi topilmasi). Backend CEO-bind holatini so'rash uchun alohida
+    # endpoint yo'q, shuning uchun bog'langan/bog'lanmaganini bilmasdan baribir
+    # tez-hisobot tugmalarini ko'rsatamiz — bosilganda bog'lanmagan bo'lsa
+    # backend/`ceo_analyze_callback` o'zi yumshoq xato beradi (xavfsiz).
+    if msg.chat.type == "private":
+        if not CEO_BIND_ENABLE:
+            await msg.answer("⚠️ This feature is currently unavailable. Please try again later.")
+            return
+        kb = InlineKeyboardBuilder()
+        for h in (1, 6, 12, 24):
+            kb.button(text=f"{h} soat", callback_data=f"ceo_analyze:{h}")
+        kb.adjust(4)
+        await msg.answer("Quick report — tap a window:", reply_markup=kb.as_markup())
+        return
+
     chat_name = msg.chat.title or msg.from_user.full_name or "Private Chat"
 
     await msg.answer("🔎 Checking group registration... Please wait.")
