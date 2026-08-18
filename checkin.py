@@ -36,7 +36,8 @@ from db import get_company_permissions, get_load_from_cache
 from external import get_api_token, get_loads_from_api, invalidate_token
 from groups import get_or_fetch_company_id
 from messaging import send_error_to_group
-from state import cerebras_client, groq_client
+from paperwork.gemini import gemini_text_completion
+from state import cerebras_client
 from stats import record_checkin_event
 
 logger = logging.getLogger(__name__)
@@ -585,17 +586,33 @@ Rules:
 
 If this is NOT a check-in/check-out or pickup/delivery confirmation message, return: null"""
 
-        # Provider fallback: Groq (asosiy) -> Cerebras (Groq ishlamay qolsa).
-        # Cerebras'da gpt-oss reasoning modeli — ko'proq token + reasoning_effort=low kerak.
-        groq_extra: dict[str, Any] = {"max_tokens": 150}
-        providers = [("Groq", groq_client, "llama-3.3-70b-versatile", groq_extra)]
-        if cerebras_client is not None:
-            cb_extra: dict[str, Any] = {"max_tokens": 400, "extra_body": {"reasoning_effort": "low"}}
-            providers.append(("Cerebras", cerebras_client, "gpt-oss-120b", cb_extra))
-
+        # 2026-08-18 jonli avariya: Groq'dagi llama-3.3-70b-versatile modeli Groq
+        # tomonidan O'CHIRILGAN (404 model_not_found — doimiy), Cerebras esa 402
+        # (billing tugagan). Ikkala tashqi provayder birdan o'lik — LLM-yo'lga
+        # muhtoj check-in'lar (BOL/POD so'zi yo'q erkin formatlar) JIMGINA yo'qolardi.
+        # Endi ASOSIY — Gemini text-yo'lagi (tickets classify bilan bir xil helper,
+        # 429-backoff + regional zaxira o'z ichida). Cerebras ZAXIRA bo'lib qoladi
+        # (billing to'lansa avtomatik jonlanadi). Groq zanjirdan olib tashlandi —
+        # o'rniga taxminiy model-id qo'yib bo'lmaydi: aynan shunday eskirgan
+        # hardcode zanjirni sindirgan edi.
         content = None
         used = None
         last_err = None
+        try:
+            content = (await gemini_text_completion(
+                "You are a logistics data extractor. Return only valid JSON or null.",
+                prompt, max_tokens=300, temperature=0.1,
+            )).strip()
+            used = "Gemini"
+        except Exception as e:
+            last_err = e
+            logger.warning("⚠️ Gemini checkin parse xato, keyingi provayderga o'tilyapti: %s", e)
+
+        # Cerebras'da gpt-oss reasoning modeli — ko'proq token + reasoning_effort=low kerak.
+        providers = []
+        if content is None and cerebras_client is not None:
+            cb_extra: dict[str, Any] = {"max_tokens": 400, "extra_body": {"reasoning_effort": "low"}}
+            providers.append(("Cerebras", cerebras_client, "gpt-oss-120b", cb_extra))
         for name, llm, model, extra in providers:
             # 429 (rate-limit) bo'lsa o'sha provayderni qisqa kutib qayta urinamiz.
             for attempt in range(3):
