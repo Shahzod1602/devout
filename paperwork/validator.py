@@ -5,7 +5,7 @@ import logging
 from collections import Counter
 from io import BytesIO
 
-from config import PO_MATCH_ENFORCE
+from config import BOL_RESCUE_MODEL, PO_MATCH_ENFORCE
 from PIL import Image
 from stats import current_gemini_endpoint
 
@@ -349,16 +349,20 @@ async def validate_bol_with_loads_gemini(bol_images: list, loads: list) -> dict:
 
 
 async def validate_bol_rescue_gemini(bol_images: list, loads: list, thinking_budget: int) -> dict:
-    """No_match'dan keyingi RESCUE-pass: BARCHA loadlar bitta ro'yxatda, thinking YOQIQ.
+    """No_match'dan keyingi RESCUE-pass: BARCHA loadlar bitta ro'yxatda, KUCHLI model
+    (BOL_RESCUE_MODEL, default 3.5-flash) + thinking YOQIQ.
 
-    Asosiy yo'l arzon (thinking=0, subset-subset) — u topa olmaganda, faqat shu
-    ~5% failure-yo'lida bitta qimmatroq chuqur-o'ylash chaqiruvi qilinadi. Prompt
-    asosiy yo'l bilan AYNAN bir xil (_build_validate_prompt) — faqat thinking farq
-    qiladi, natija shakli ham bir xil (downstream kod o'zgarishsiz ishlaydi)."""
+    Asosiy yo'l arzon (3-flash-preview, thinking=0, subset-subset) — u topa
+    olmaganda, faqat shu ~5% failure-yo'lida bitta qimmatroq chuqur-o'ylash
+    chaqiruvi qilinadi. Prompt asosiy yo'l bilan AYNAN bir xil
+    (_build_validate_prompt) — faqat model+thinking farq qiladi, natija shakli
+    ham bir xil (downstream kod o'zgarishsiz ishlaydi)."""
     current_gemini_endpoint.set("validate-bol-rescue")
     prompt = _build_validate_prompt(loads)
     pil_images = [Image.open(BytesIO(img)) for img in bol_images]
-    res = await gemini_extract_once(pil_images, prompt, 4, thinking_budget=thinking_budget)
-    logger.info("🛟 Rescue natija: isBOL=%s, isLateSlip=%s, matchedIndex=%s, matchType=%s",
-                res.get('isBOL'), res.get('isLateSlip'), res.get('matchedIndex'), res.get('matchType'))
+    res = await gemini_extract_once(pil_images, prompt, 4,
+                                    thinking_budget=thinking_budget, model=BOL_RESCUE_MODEL)
+    logger.info("🛟 Rescue natija (%s): isBOL=%s, isLateSlip=%s, matchedIndex=%s, matchType=%s",
+                BOL_RESCUE_MODEL, res.get('isBOL'), res.get('isLateSlip'),
+                res.get('matchedIndex'), res.get('matchType'))
     return res

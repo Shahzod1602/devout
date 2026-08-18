@@ -86,8 +86,11 @@ GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.1-flash-lite")
 # chaqiruv. Faqat no_match yo'lida (~5% trafik) ishlaydi, shuning uchun narxga
 # ta'siri arzimas; sifat esa aynan yo'qotilayotgan joyda qaytadi.
 # Kill-switch: BOL_MATCH_RESCUE=0. Byudjet: -1 = dinamik (model o'zi hal qiladi).
+# Rescue MODELI ham kuchliroq: 3.5-flash (asosiy yo'l arzon 3-flash-preview'da
+# qoladi) — "sifat-yuqoriga zaxira" naqshi, 429-fallback bilan bir xil model.
 BOL_MATCH_RESCUE = os.getenv("BOL_MATCH_RESCUE", "1").strip() == "1"
 BOL_RESCUE_THINKING_BUDGET = int(os.getenv("BOL_RESCUE_THINKING_BUDGET", "-1").strip())
+BOL_RESCUE_MODEL = os.getenv("BOL_RESCUE_MODEL", "gemini-3.5-flash")
 
 # === Error logger Telegram bot ===
 ERROR_BOT_TOKEN = _require_env("ERROR_BOT_TOKEN")

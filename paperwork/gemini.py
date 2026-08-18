@@ -126,11 +126,15 @@ def _is_retryable_error(exc: Exception) -> bool:
 
 
 async def _generate_with_backoff(text_prompt: str, image_parts: list,
-                                 thinking_config=PW_THINKING_CONFIG):
+                                 thinking_config=PW_THINKING_CONFIG,
+                                 model_override: str | None = None):
     """generate_content chaqiruvi — 429/RESOURCE_EXHAUSTED bo'lsa backoff bilan retry.
 
     `thinking_config` default PW_THINKING_CONFIG (thinking=0). Rescue-pass kabi
     alohida chaqiruvlar o'z konfigini beradi (None = dinamik thinking).
+    `model_override` — asosiy urinishlar GEMINI_BOT_MODEL o'rniga shu modelda
+    ketadi (rescue 3.5-flash ishlatadi); 429-zaxira yo'li o'zgarmaydi
+    (GEMINI_FALLBACK_MODEL@region — u ham 3.5-flash).
 
     Har bir urinish (muvaffaqiyatli yoki yo'q) `record_gemini_call` orqali yoziladi.
     Kvota bilan bog'liq bo'lmagan xatolar darrov qayta tashlanadi (retry qilinmaydi).
@@ -143,7 +147,7 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list,
     use_fallback = False
     for quota_retry in range(_QUOTA_MAX_RETRIES):
         client = get_fallback_client() if use_fallback else get_genai_client()
-        model = GEMINI_FALLBACK_MODEL if use_fallback else GEMINI_BOT_MODEL
+        model = GEMINI_FALLBACK_MODEL if use_fallback else (model_override or GEMINI_BOT_MODEL)
         call_start = time.time()
         response = None
         try:
@@ -323,7 +327,8 @@ async def gemini_transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/og
 
 
 async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: int,
-                              thinking_budget: int | None = None) -> dict:
+                              thinking_budget: int | None = None,
+                              model: str | None = None) -> dict:
     """Gemini'dan bir marta ma'lumot olish (cost + latency tracking bilan).
 
     JSON parse xatosi bo'lsa 3 marta retry qilinadi. API chaqiruvi 429/
@@ -333,7 +338,8 @@ async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: i
 
     `thinking_budget`: None → global default (PW_THINKING_CONFIG, thinking=0);
     -1 → dinamik thinking (model o'zi hal qiladi); N → aynan shu byudjet.
-    Rescue-pass (no_match'dan keyingi chuqur urinish) shu knob bilan chaqiradi.
+    `model`: None → GEMINI_BOT_MODEL; berilsa asosiy urinishlar shu modelda.
+    Rescue-pass (no_match'dan keyingi chuqur urinish) ikkala knob bilan chaqiradi.
     """
     if thinking_budget is None:
         thinking_config = PW_THINKING_CONFIG
@@ -349,7 +355,7 @@ async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: i
         image_parts.append(genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png"))
 
     for retry in range(3):
-        response = await _generate_with_backoff(text_prompt, image_parts, thinking_config)
+        response = await _generate_with_backoff(text_prompt, image_parts, thinking_config, model)
         # PWK-8: safety-block/bo'sh candidate holatida response.text ValueError tashlashi
         # mumkin — guard qilamiz, aks holda self-consistency ichida kutilmagan crash.
         try:
