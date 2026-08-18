@@ -81,6 +81,14 @@ GEMINI_FALLBACK_LOCATION = os.getenv("GEMINI_FALLBACK_LOCATION", "europe-west2")
 # flash-lite tugallanganlarida 44/44 to'g'ri; narx 4o-mini sinfida. Global-only model.
 GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.1-flash-lite")
 
+# BOL match RESCUE-pass: asosiy (thinking=0, current/other subset) yo'l moslik topa
+# olmasa — barcha loadlar BITTA ro'yxatda, thinking yoqiq holda bitta qo'shimcha
+# chaqiruv. Faqat no_match yo'lida (~5% trafik) ishlaydi, shuning uchun narxga
+# ta'siri arzimas; sifat esa aynan yo'qotilayotgan joyda qaytadi.
+# Kill-switch: BOL_MATCH_RESCUE=0. Byudjet: -1 = dinamik (model o'zi hal qiladi).
+BOL_MATCH_RESCUE = os.getenv("BOL_MATCH_RESCUE", "1").strip() == "1"
+BOL_RESCUE_THINKING_BUDGET = int(os.getenv("BOL_RESCUE_THINKING_BUDGET", "-1").strip())
+
 # === Error logger Telegram bot ===
 ERROR_BOT_TOKEN = _require_env("ERROR_BOT_TOKEN")
 ERROR_GROUP_ID = int(os.environ.get("ERROR_GROUP_ID", "-5133077215"))

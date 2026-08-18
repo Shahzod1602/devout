@@ -37,14 +37,21 @@ def _majority_vote(samples: list[dict]) -> dict:
     # LateSlip). isBOL/isLateSlip'ni alohida ovozga qo'yish ikkalasi ham True bo'lib
     # qolishiga olib kelardi (bitta sample invariantni buzsa → ikkita mustaqil 2/3
     # ko'pchilik), buni downstream Late Slip deb qabul qilib haqiqiy BOL'ni rad etardi.
-    # Har sample'ni bitta kategoriyaga yig'ib, so'ng bir marta ovoz beramiz — both-True imkonsiz.
+    # Har sample'ni banta kategoriyaga yig'ib, so'ng bir marta ovoz beramiz — both-true imkonsiz.
+    #
+    # AUD3-BOL-FN (2026-07-25 regression fix): oldin "both-True" (model BOL deb
+    # shubhalangan, lekin isLateSlip=true ham yoqib qo'ygan) ham "neither"ga tushardi.
+    # Natijada: 1 ta toza BOL + 2 ta shubhali-BOL = 2 "neither" → g'olib "neither" →
+    # HAQIQIY BOL rad etilardi (not_bol rejections 12% → 31%). Endi both-True "bol"
+    # ovoz beradi — model BOL deb ko'rganda LateSlip shubhasi rad sababi bo'lmasligi kerak.
+    # both-False hali ham "neither" (na BOL, na LateSlip aniq — konservativ saqlanadi).
     def _cat(s: dict) -> str:
         bol, late = bool(s.get("isBOL")), bool(s.get("isLateSlip"))
-        if bol and not late:
+        if bol:  # both-True ham shu shoxga tushadi — BOL ustun (FN regression fix)
             return "bol"
-        if late and not bol:
+        if late:
             return "late"
-        return "neither"  # both-True (ziddiyat) yoki both-False → konservativ
+        return "neither"
     voted_cat = _vote_field([{"c": _cat(s)} for s in samples], "c", default="neither")
     voted_bol = voted_cat == "bol"
     voted_late = voted_cat == "late"
@@ -118,9 +125,10 @@ def determine_file_type(stops: list) -> int:
     return -1
 
 
-async def validate_bol_with_loads_gemini(bol_images: list, loads: list) -> dict:
-    """BOL rasmlarni RateCon JSON bilan solishtirish (self-consistency: 2 parallel call + tiebreaker)."""
-    current_gemini_endpoint.set("validate-bol-with-loads")
+def _build_validate_prompt(loads: list) -> str:
+    """BOL↔loads solishtirish prompti. `validate_bol_with_loads_gemini` (asosiy
+    self-consistency yo'l) va `validate_bol_rescue_gemini` (no_match'dan keyingi
+    thinking-yoqiq rescue) BIR XIL promptdan foydalanadi — qoidalar ajralmasin."""
     loads_info = []
     for i, load in enumerate(loads):
         stops = load.get("stops", [])
@@ -210,7 +218,11 @@ REJECT as NOT BOL (isBOL=false AND isLateSlip=false):
 
 STEP 2 — Find matching load (set "matchedIndex" to 1-based index, or 0 if no match):
 Match signals ranked by strength:
-  1. LOAD/BOL NUMBER (strongest): Does the document's BOL#, PO#, Pro#, Trip#, Route#, or reference number equal any load's "loadNumber"?
+  1. REFERENCE NUMBER (strongest): Does ANY number printed on the document (BOL#, PO#, Pro#,
+     Trip#, Route#, Ref#, Order#, pickup/confirmation number) match a load's "loadNumber" OR any
+     entry in that load's "references" list? Compare ignoring case, spaces, dashes, '#' signs and
+     leading zeros; a document number that contains or is contained by a load reference also
+     counts as a match, but only when the shorter side has at least 5 characters.
   2. PICKUP CITY/STATE: Does the shipper/origin/dispatch facility match a load's pickup address?
   3. DELIVERY CITY/STATE: Does the consignee/destination match a load's delivery address?
   4. WEIGHT: Use as secondary confirmation only
@@ -220,7 +232,8 @@ Same city or metro area counts as a match even if the street address differs.
 
 MATCH RULE (be strict — a wrong match is worse than no match):
   Set matchedIndex > 0 ONLY when EITHER
-    (a) a BOL#/PO#/Pro#/Trip#/Route# on the document equals a load's loadNumber, OR
+    (a) a reference number on the document matches a load's "loadNumber" or one of its
+        "references" entries (using the signal-1 normalization above), OR
     (b) BOTH the pickup city/state AND the delivery city/state match the SAME load.
   A single city match alone is NOT sufficient — return 0.
   If two or more loads match by lane (same pickup+delivery area), you MUST use the reference
@@ -299,6 +312,13 @@ Return ONLY valid JSON — no markdown, no code fences, no extra text:
     "loadSecurement": {{"isHealthy": true or false, "summary": "brief explanation"}},
     "pageCount": {{"printedTotal": null, "realPages": 1, "irrelevantPages": 0}}
 }}"""
+    return prompt
+
+
+async def validate_bol_with_loads_gemini(bol_images: list, loads: list) -> dict:
+    """BOL rasmlarni RateCon JSON bilan solishtirish (self-consistency: 2 parallel call + tiebreaker)."""
+    current_gemini_endpoint.set("validate-bol-with-loads")
+    prompt = _build_validate_prompt(loads)
 
     # Her bir call uchun alohida PIL image ochiladi (shared stream muammosini oldini olish)
     pil_images_1 = [Image.open(BytesIO(img)) for img in bol_images]
@@ -326,3 +346,19 @@ Return ONLY valid JSON — no markdown, no code fences, no extra text:
     logger.info("🔁 Tiebreaker result: isBOL=%s, isLateSlip=%s, matchedIndex=%s",
                 r3.get('isBOL'), r3.get('isLateSlip'), r3.get('matchedIndex'))
     return _majority_vote([r1, r2, r3])
+
+
+async def validate_bol_rescue_gemini(bol_images: list, loads: list, thinking_budget: int) -> dict:
+    """No_match'dan keyingi RESCUE-pass: BARCHA loadlar bitta ro'yxatda, thinking YOQIQ.
+
+    Asosiy yo'l arzon (thinking=0, subset-subset) — u topa olmaganda, faqat shu
+    ~5% failure-yo'lida bitta qimmatroq chuqur-o'ylash chaqiruvi qilinadi. Prompt
+    asosiy yo'l bilan AYNAN bir xil (_build_validate_prompt) — faqat thinking farq
+    qiladi, natija shakli ham bir xil (downstream kod o'zgarishsiz ishlaydi)."""
+    current_gemini_endpoint.set("validate-bol-rescue")
+    prompt = _build_validate_prompt(loads)
+    pil_images = [Image.open(BytesIO(img)) for img in bol_images]
+    res = await gemini_extract_once(pil_images, prompt, 4, thinking_budget=thinking_budget)
+    logger.info("🛟 Rescue natija: isBOL=%s, isLateSlip=%s, matchedIndex=%s, matchType=%s",
+                res.get('isBOL'), res.get('isLateSlip'), res.get('matchedIndex'), res.get('matchType'))
+    return res

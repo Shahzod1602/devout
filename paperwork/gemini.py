@@ -3,6 +3,7 @@ import asyncio
 import functools
 import json
 import logging
+import os
 import random
 import time
 from io import BytesIO
@@ -34,6 +35,14 @@ logger = logging.getLogger(__name__)
 _QUOTA_MAX_RETRIES = 6          # jami urinishlar (1 asosiy + 5 retry)
 _QUOTA_BACKOFF_BASE = 2.0       # 2s, 4s, 8s, 15s, 15s (cap) + 0..1s jitter
 _QUOTA_BACKOFF_CAP = 15.0
+
+# Paperwork vision thinking byudjeti: 0 = O'CHIQ (default). Dinamik thinking (3.5-flash davri)
+# kuniga ~600-700k YASHIRIN token (~$6, stats'da total-in-out delta) yer edi; askai POD A/B
+# (real PROD hujjatlar) — verdictlar thinking'siz mos (59/60), ratecon precedenti bilan bir xil.
+# Eski dinamik xulq (kill-switch): PAPERWORK_THINKING_BUDGET=-1.
+_PW_THINK_RAW = os.getenv("PAPERWORK_THINKING_BUDGET", "0").strip()
+PW_THINKING_CONFIG = (None if _PW_THINK_RAW == "-1"
+                      else genai_types.ThinkingConfig(thinking_budget=int(_PW_THINK_RAW)))
 
 # Vertex AI (service account) orqali — API key emas, shuning uchun key muddati
 # tugashi muammosi yo'q. Credential `GOOGLE_APPLICATION_CREDENTIALS` orqali.
@@ -116,8 +125,12 @@ def _is_retryable_error(exc: Exception) -> bool:
     return is_quota_error(exc) or is_transient_server_error(exc)
 
 
-async def _generate_with_backoff(text_prompt: str, image_parts: list):
+async def _generate_with_backoff(text_prompt: str, image_parts: list,
+                                 thinking_config=PW_THINKING_CONFIG):
     """generate_content chaqiruvi — 429/RESOURCE_EXHAUSTED bo'lsa backoff bilan retry.
+
+    `thinking_config` default PW_THINKING_CONFIG (thinking=0). Rescue-pass kabi
+    alohida chaqiruvlar o'z konfigini beradi (None = dinamik thinking).
 
     Har bir urinish (muvaffaqiyatli yoki yo'q) `record_gemini_call` orqali yoziladi.
     Kvota bilan bog'liq bo'lmagan xatolar darrov qayta tashlanadi (retry qilinmaydi).
@@ -145,7 +158,8 @@ async def _generate_with_backoff(text_prompt: str, image_parts: list):
                     # ishlardi — shu sabab r1/r2 tez-tez kelishmay 3-chi tiebreaker yonardi.
                     # Past harorat kelishmovchilikni kamaytiradi (kamroq pullik 3-chi call,
                     # barqarorroq health/match maydonlari), lekin biroz diversity qoladi.
-                    config=genai_types.GenerateContentConfig(max_output_tokens=10000, temperature=0.2),
+                    config=genai_types.GenerateContentConfig(max_output_tokens=10000, temperature=0.2,
+                                                             thinking_config=thinking_config),
                 ),
             )
             latency_ms = int((time.time() - call_start) * 1000)
@@ -308,14 +322,26 @@ async def gemini_transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/og
     )
 
 
-async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: int) -> dict:
+async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: int,
+                              thinking_budget: int | None = None) -> dict:
     """Gemini'dan bir marta ma'lumot olish (cost + latency tracking bilan).
 
     JSON parse xatosi bo'lsa 3 marta retry qilinadi. API chaqiruvi 429/
     RESOURCE_EXHAUSTED (kvota) bilan yiqilsa, `_generate_with_backoff` ichida
     exponential backoff bilan qayta urinadi. Har bir urinish record_gemini_call
     (success=True/False) orqali yoziladi.
+
+    `thinking_budget`: None → global default (PW_THINKING_CONFIG, thinking=0);
+    -1 → dinamik thinking (model o'zi hal qiladi); N → aynan shu byudjet.
+    Rescue-pass (no_match'dan keyingi chuqur urinish) shu knob bilan chaqiradi.
     """
+    if thinking_budget is None:
+        thinking_config = PW_THINKING_CONFIG
+    elif thinking_budget == -1:
+        thinking_config = None  # dinamik — SDK'ga thinking_config yuborilmaydi
+    else:
+        thinking_config = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
+
     image_parts = []
     for img in pil_images:
         buf = BytesIO()
@@ -323,7 +349,7 @@ async def gemini_extract_once(pil_images: list, text_prompt: str, attempt_num: i
         image_parts.append(genai_types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png"))
 
     for retry in range(3):
-        response = await _generate_with_backoff(text_prompt, image_parts)
+        response = await _generate_with_backoff(text_prompt, image_parts, thinking_config)
         # PWK-8: safety-block/bo'sh candidate holatida response.text ValueError tashlashi
         # mumkin — guard qilamiz, aks holda self-consistency ichida kutilmagan crash.
         try:

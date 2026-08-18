@@ -1,11 +1,12 @@
 """POST /check-bol endpoint — orchestrates the full paperwork analysis flow."""
 import asyncio
+import json
 import logging
 import re
 import time
 
 import fitz  # PyMuPDF — PDF text-qatlamidan bosilgan "Page X of Y" ni deterministik o'qish
-from config import PO_MATCH_ENFORCE
+from config import BOL_MATCH_RESCUE, BOL_RESCUE_THINKING_BUDGET, PO_MATCH_ENFORCE
 from external import get_load_details, get_loads_from_api
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from messaging import send_error_to_group
@@ -14,7 +15,7 @@ from stats import record_paperwork_event
 from .gemini import is_quota_error
 from .pdf import MAX_PAGES, process_file
 from .us_mail import analyze_us_mail_federal_gemini, is_us_mail_load
-from .validator import validate_bol_with_loads_gemini
+from .validator import validate_bol_rescue_gemini, validate_bol_with_loads_gemini
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -166,6 +167,13 @@ async def check_bol_endpoint(
         current_loads = [ld for ld in loads if ld.get("isCurrent") is True]
         other_loads = [ld for ld in loads if ld.get("isCurrent") is not True]
         logger.info("✅ %d current + %d other load (%d total)", len(current_loads), len(other_loads), len(loads))
+        # Diagnostika: stops'siz loadlar uchun lane-match (pickup+delivery shahar) IMKONSIZ —
+        # bunday load faqat reference raqami orqali topilishi mumkin. Bu log no_match
+        # tekshiruvida "nega topmadi"ga birinchi javob bo'ladi.
+        _no_stops = sum(1 for ld in loads if not (ld.get("stops") or []))
+        if _no_stops:
+            logger.warning("⚠️ %d/%d load stops'siz — bu loadlar faqat reference raqami bilan topiladi",
+                           _no_stops, len(loads))
 
         # 3. BOL/Late Slip ni avval current, keyin (kerak bo'lsa) boshqa loadlar bilan solishtirish.
         # BOL-2: matchType bo'yicha rank — kuchli "number" (reference raqam, rank 2) match
@@ -216,7 +224,34 @@ async def check_bol_endpoint(
             return {"success": False, "message": "Document is not a BOL",
                     "bol_data": {"pickup": "not found", "delivery": "not found"}}
 
+        # RESCUE-pass: asosiy yo'l (thinking=0, current/other subset) moslik topmadi,
+        # lekin hujjat BOL/LateSlip. Barcha loadlar BITTA ro'yxatda + thinking yoqiq
+        # holda bitta chuqur urinish — faqat shu failure-yo'lida ishlagani uchun narx
+        # ta'siri arzimas. Xatosi yutiladi: rescue yiqilsa oddiy no_match qaytadi
+        # (aks holda 429 rescue'da no_match'ni "Kutilmagan xatolik"ka aylantirardi).
+        if matched_load is None and BOL_MATCH_RESCUE:
+            all_loads = current_loads + other_loads
+            logger.info("🛟 Asosiy yo'l moslik topmadi — rescue-pass (%d load, thinking yoqiq)...",
+                        len(all_loads))
+            try:
+                res = await validate_bol_rescue_gemini(bol_images, all_loads, BOL_RESCUE_THINKING_BUDGET)
+                mi = res.get("matchedIndex", 0)
+                if (res.get("isBOL") or res.get("isLateSlip")) and mi and 1 <= mi <= len(all_loads):
+                    matched_load = all_loads[mi - 1]
+                    result = res
+                    is_late_slip_doc = bool(res.get("isLateSlip", False))
+                    logger.info("🛟 Rescue moslik TOPDI: index=%s, matchType=%s", mi, res.get("matchType"))
+            except Exception:
+                logger.exception("🛟 Rescue-pass xatosi — no_match yo'lida davom etamiz")
+
         if matched_load is None:
+            # Diagnostika-log: keyingi "nega topmadi?" tekshiruvi loglardan o'zi ko'rinsin —
+            # har bir nomzod loadning raqami, ma'lum referencelari va stops soni.
+            _cands = [{"n": ld.get("loadNumber") or ld.get("loadId"),
+                       "refs": ld.get("references"),
+                       "stops": len(ld.get("stops") or [])} for ld in loads]
+            logger.warning("🧭 no_match diagnostika (group %s): candidates=%s",
+                           group_id, json.dumps(_cands, default=str)[:3500])
             await record_paperwork_event(group_id, "no_match", latency_ms=_lat())
             return {"success": False, "message": "BOL did not match any load",
                     "bol_data": {"pickup": "not found", "delivery": "not found"},
